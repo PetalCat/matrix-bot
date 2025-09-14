@@ -1,0 +1,11 @@
+# Local environment
+.env
+
+# Bot state
+bot-store/
+session.json
+config.yaml
+data/
+
+# Build artifacts (if running from crate dir)
+/target/

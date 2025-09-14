@@ -1,0 +1,7 @@
+target
+bot-store
+session.json
+**/.git
+**/.DS_Store
+**/node_modules
+**/tmp

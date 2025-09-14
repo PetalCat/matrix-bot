@@ -1,0 +1,22 @@
+# Define clusters of rooms to relay between.
+# Each cluster lists room IDs or aliases. Messages in one room
+# will be forwarded to the other rooms in the same cluster.
+
+## Global defaults (can be overridden per-cluster)
+# reupload_media: true    # download remote media and reupload before sending
+# caption_media:  true    # send a caption like "Name: sent an image"
+
+clusters:
+  - name: sample-pair
+    rooms:
+      - "!roomIdA:example.org"   # or "#aliasA:example.org"
+      - "!roomIdB:example.org"   # or "#aliasB:example.org"
+    # Optional overrides for this cluster
+    # reupload_media: true
+    # caption_media: true
+
+  # - name: another-cluster
+  #   rooms:
+  #     - "!roomIdC:example.org"
+  #     - "!roomIdD:example.org"
+  #     - "!roomIdE:example.org"
