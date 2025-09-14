@@ -1,4 +1,5 @@
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+use std::io::IsTerminal;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
@@ -138,9 +139,16 @@ async fn main() -> Result<()> {
         };
         client.restore_session(matrix_session).await.context("restoring session")?;
     } else {
-        let password = match args.password {
-            Some(p) => p,
+        // Treat empty env/arg as missing; avoid prompting in non-interactive (Docker) mode.
+        let password = match args.password.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(p) => p.to_owned(),
             None => {
+                if !std::io::stdin().is_terminal() {
+                    return Err(anyhow!(
+                        "No MATRIX_PASSWORD provided and no stored session. In Docker/non-interactive mode, set MATRIX_PASSWORD env or mount an existing session at {}",
+                        args.session_file.display()
+                    ));
+                }
                 warn!("No password provided via --password or MATRIX_PASSWORD. Prompting...");
                 rpassword::prompt_password("Matrix password: ")?
             }
