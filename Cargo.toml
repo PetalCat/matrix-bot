@@ -13,6 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
 futures-util = "0.3"
+async-trait = "0.1"
 
 # Matrix Rust SDK with E2EE + SQLite store
 matrix-sdk = { version = "0.7", features = ["e2e-encryption", "sqlite"] }

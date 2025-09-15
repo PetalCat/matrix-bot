@@ -27,8 +27,10 @@ use serde_yaml;
 use matrix_sdk::attachment::AttachmentConfig;
 use mime::Mime;
 
+mod commands;
+
 #[derive(Parser, Debug)]
-#[command(name = "matrix-ping-bot", version, about = "Simple Matrix ping bot with E2EE")] 
+#[command(name = "matrix-ping-bot", version, about = "Simple Matrix ping bot with E2EE")]
 struct Args {
     /// Homeserver base URL, e.g. https://matrix-client.matrix.org
     #[arg(long, env = "MATRIX_HOMESERVER")]
@@ -69,6 +71,14 @@ struct Args {
     /// Sync timeout in milliseconds
     #[arg(long, env = "MATRIX_SYNC_TIMEOUT_MS", default_value_t = 30000)]
     sync_timeout_ms: u64,
+
+    /// Enable dev-mode behaviors (must also be enabled in config)
+    #[arg(short = 'd', long = "dev")]
+    dev: bool,
+
+    /// Instance mode override via env/flag: "dev" or "prod"
+    #[arg(long, env = "MATRIX_MODE")]
+    mode: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -85,6 +95,7 @@ struct BotConfig {
     clusters: Vec<RoomCluster>,
     #[serde(default)] reupload_media: Option<bool>,
     #[serde(default)] caption_media: Option<bool>,
+    #[serde(default)] dev_mode: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -180,7 +191,11 @@ async fn main() -> Result<()> {
 
     // Load relay configuration and resolve room IDs
     let config = load_config(&args.config)?;
+    let env_dev = matches!(args.mode.as_deref(), Some(m) if m.eq_ignore_ascii_case("dev"));
+    let dev_active = (args.dev || env_dev) && config.dev_mode.unwrap_or(false);
     let relay = Arc::new(resolve_relay_map(&client, &config).await?);
+    // Build command registry
+    let commands = Arc::new(commands::default_registry());
 
     // Auto-join handler for invites
     if !args.no_autojoin {
@@ -206,9 +221,13 @@ async fn main() -> Result<()> {
     // Message handler: relay between configured room clusters, and keep existing commands
     let client_for_handler = client.clone();
     let relay_handler = relay.clone();
+    let commands_handler = commands.clone();
+    let dev_active_handler = dev_active;
     client.add_event_handler(move |ev: OriginalSyncRoomMessageEvent, room: Room| {
         let client = client_for_handler.clone();
         let relay = relay_handler.clone();
+        let commands = commands_handler.clone();
+        let dev_active = dev_active_handler;
         async move {
             // Ignore own messages
             let Some(own_id) = client.user_id() else { return; };
@@ -233,55 +252,38 @@ async fn main() -> Result<()> {
             };
             info!(room_id = %room.room_id(), sender = %ev.sender, kind = %msg_kind, body = ?body_snippet, "Incoming message");
 
-            // Plain text/notice messages; match command anywhere in body
+            // Plain text/notice messages; parse command if the body starts with '!'
             let body_opt = match &ev.content.msgtype {
                 MessageType::Text(t) => Some(t.body.as_str()),
                 MessageType::Notice(n) => Some(n.body.as_str()),
                 _ => None,
             };
             if let Some(body) = body_opt.map(|b| b.trim()) {
-                if body.contains("!ping") {
-                    info!(room_id = %room.room_id(), from = %ev.sender, "Responding to !ping");
-                    let content = RoomMessageEventContent::text_plain("pong");
-                    if let Err(e) = room.send(content).await { 
-                        error!(error = %e, "Failed to send pong");
-                    }
-                }
-                if body.contains("!diag") {
-                    // Build and send per-room E2EE diagnostics
-                    let user_id = own_id.to_string();
-                    let device_id = client.device_id().map(|d| d.to_string()).unwrap_or_else(|| "<unknown>".into());
-                    let is_encrypted = match room.is_encrypted().await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            warn!(error = %e, room_id = %room.room_id(), "Failed to check encryption state");
-                            false
+                if body.starts_with('!') {
+                    let mut parts = body.splitn(2, ' ');
+                    let cmd = parts.next().unwrap_or("");
+                    let args_raw = parts.next().unwrap_or("").trim();
+                    if let Some(handler) = commands.get(cmd) {
+                        let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
+                        // Enforce env selection via -d flag:
+                        // - prod (dev_active=false) only handles commands WITHOUT -d
+                        // - dev  (dev_active=true)  only handles commands WITH -d
+                        if arg_dev_flag != dev_active {
+                            info!(command = %cmd, dev_flag = arg_dev_flag, dev_active = dev_active, "Ignoring command due to env mismatch");
+                        } else if handler.dev_only() && !dev_active {
+                            info!(command = %cmd, "Ignoring dev-only command in prod mode");
+                        } else {
+                            let ctx = crate::commands::CommandContext {
+                                client: client.clone(),
+                                room: room.clone(),
+                                sender: ev.sender.to_string(),
+                                commands: commands.clone(),
+                                dev_active,
+                            };
+                            if let Err(e) = handler.run(&ctx, &args_clean).await {
+                                warn!(error = %e, command = %cmd, "Command failed");
+                            }
                         }
-                    };
-                    let mut bot_verified = None;
-                    if let Ok(Some(dev)) = client.encryption().get_own_device().await {
-                        bot_verified = Some(dev.is_verified());
-                    }
-                    let backup_state = format!("{:?}", client.encryption().backups().state());
-
-                    let mut lines = vec![
-                        format!("diag for {}", room.room_id()),
-                        format!("user: {}", user_id),
-                        format!("device: {}", device_id),
-                        format!("room_encrypted: {}", is_encrypted),
-                        format!("backup_state: {}", backup_state),
-                    ];
-                    if let Some(v) = bot_verified { lines.push(format!("bot_verified: {}", v)); }
-
-                    if is_encrypted {
-                        lines.push("hint: if messages don’t decrypt, verify the bridge/device and send a new message.".into());
-                    } else {
-                        lines.push("hint: room not encrypted; encryption diagnostics not applicable.".into());
-                    }
-                    let msg = lines.join("\n");
-                    let content = RoomMessageEventContent::text_plain(msg);
-                    if let Err(e) = room.send(content).await {
-                        error!(error = %e, "Failed to send diag");
                     }
                 }
             }
@@ -643,6 +645,15 @@ fn split_reply_fallback(body: &str) -> (Option<String>, String) {
 
 fn parse_mime(opt: Option<&str>) -> Mime {
     opt.and_then(|s| s.parse::<Mime>().ok()).unwrap_or(mime::APPLICATION_OCTET_STREAM)
+}
+
+fn extract_dev_flag(args: &str) -> (String, bool) {
+    let mut dev = false;
+    let mut kept: Vec<&str> = Vec::new();
+    for tok in args.split_whitespace() {
+        if tok == "-d" || tok == "--dev" { dev = true; } else { kept.push(tok); }
+    }
+    (kept.join(" "), dev)
 }
 
 async fn reupload_image(client: &Client, img: &ImageMessageEventContent) -> Result<(String, Mime, Vec<u8>)> {
