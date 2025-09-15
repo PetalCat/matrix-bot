@@ -204,6 +204,8 @@ async fn main() -> Result<()> {
     let env_dev = matches!(args.mode.as_deref(), Some(m) if m.eq_ignore_ascii_case("dev"));
     let dev_active = (args.dev || env_dev) && config.dev_mode.unwrap_or(false);
     let relay = Arc::new(resolve_relay_map(&client, &config).await?);
+    // Loud banner so mode is obvious at startup
+    print_mode_banner(dev_active);
     // Build command registry
     let commands = Arc::new(commands::default_registry());
 
@@ -301,8 +303,11 @@ async fn main() -> Result<()> {
             // Relay to rooms in the same cluster.
             // - For text/notice/emote: send as plain text "DisplayName: message".
             // - For other types: forward original content unchanged.
-            let source_id = room.room_id().to_owned();
-            if let Some(targets) = relay.map.get(&source_id).cloned() {
+            if dev_active {
+                info!(room_id = %room.room_id(), "Dev mode active: relay disabled");
+            } else {
+                let source_id = room.room_id().to_owned();
+                if let Some(targets) = relay.map.get(&source_id).cloned() {
                 let opts = relay.opts.get(&source_id).copied().unwrap_or(RelayOptions { reupload_media: true, caption_media: true });
                 // Resolve sender display name in the source room
                 let display_name = match room.get_member(&ev.sender).await {
@@ -401,8 +406,9 @@ async fn main() -> Result<()> {
                         warn!(from = %source_id, to = %target_id, "No handle for target room; skipping relay");
                     }
                 }
-            } else {
-                info!(room_id = %source_id, "No relay mapping for this room; not forwarding");
+                } else {
+                    info!(room_id = %source_id, "No relay mapping for this room; not forwarding");
+                }
             }
         }
     });
@@ -476,6 +482,37 @@ fn load_config(path: &PathBuf) -> Result<BotConfig> {
         .with_context(|| format!("reading config file at {}", path.display()))?;
     let cfg: BotConfig = serde_yaml::from_str(&yaml).context("parsing YAML config")?;
     Ok(cfg)
+}
+
+fn print_mode_banner(dev_active: bool) {
+    let is_tty = std::io::stdout().is_terminal();
+    let (title, sub, color) = if dev_active {
+        (
+            "DEVELOPMENT MODE ACTIVE",
+            "RELAYING IS DISABLED — use -d or MATRIX_MODE=dev",
+            "\x1b[1;33m", // bold yellow
+        )
+    } else {
+        (
+            "PRODUCTION MODE",
+            "Relaying is enabled — commands without -d",
+            "\x1b[1;32m", // bold green
+        )
+    };
+    if is_tty {
+        println!(
+            "{color}==============================\n  {title}\n  {sub}\n==============================\x1b[0m"
+        );
+    } else {
+        println!(
+            "==============================\n  {title}\n  {sub}\n=============================="
+        );
+    }
+    if dev_active {
+        info!("Dev mode active: relay disabled");
+    } else {
+        info!("Prod mode: relay enabled");
+    }
 }
 
 async fn resolve_relay_map(client: &Client, cfg: &BotConfig) -> Result<RelayPlan> {

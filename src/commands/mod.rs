@@ -43,9 +43,7 @@ impl Command for PingCommand {
     fn help(&self) -> &'static str { "Responds with pong." }
 
     async fn run(&self, ctx: &CommandContext, _args: &str) -> Result<()> {
-        let content = RoomMessageEventContent::text_plain("pong");
-        ctx.room.send(content).await?;
-        Ok(())
+        send_text(ctx, "pong").await
     }
 }
 
@@ -94,8 +92,7 @@ impl Command for DiagCommand {
         }
 
         let msg = lines.join("\n");
-        let content = RoomMessageEventContent::text_plain(msg);
-        if let Err(e) = ctx.room.send(content).await {
+        if let Err(e) = send_text(ctx, msg).await {
             warn!(error = %e, "Failed to send diag");
         }
         Ok(())
@@ -121,9 +118,7 @@ impl Command for HelpCommand {
         for (name, help) in pairs {
             lines.push(format!("{} — {}", name, help));
         }
-        let content = RoomMessageEventContent::text_plain(lines.join("\n"));
-        ctx.room.send(content).await?;
-        Ok(())
+        send_text(ctx, lines.join("\n")).await
     }
 }
 
@@ -147,8 +142,21 @@ impl Command for ModeCommand {
                 lines.push("example: !diag".into());
             }
         }
-        let content = RoomMessageEventContent::text_plain(lines.join("\n"));
-        ctx.room.send(content).await?;
-        Ok(())
+        send_text(ctx, lines.join("\n")).await
     }
+}
+
+fn decorate_dev(text: &str, dev_active: bool) -> String {
+    if dev_active {
+        format!("=======DEV MODE=======\n{}", text)
+    } else {
+        text.to_string()
+    }
+}
+
+async fn send_text(ctx: &CommandContext, text: impl Into<String>) -> Result<()> {
+    let out = decorate_dev(&text.into(), ctx.dev_active);
+    let content = RoomMessageEventContent::text_plain(out);
+    ctx.room.send(content).await?;
+    Ok(())
 }
