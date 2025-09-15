@@ -118,8 +118,18 @@ struct RelayPlan {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
-    // Load .env if present so clap can pick up env vars
-    let _ = dotenvy::dotenv();
+    // Load .env if present so clap can pick up env vars.
+    // First, try standard upward search from CWD. If none found, also try
+    // the common repo layout path "matrix-ping-bot/.env" relative to CWD.
+    let loaded_default = dotenvy::dotenv().ok();
+    if loaded_default.is_none() {
+        if let Ok(cwd) = std::env::current_dir() {
+            let alt = cwd.join("matrix-ping-bot/.env");
+            if alt.exists() {
+                let _ = dotenvy::from_path(&alt);
+            }
+        }
+    }
     let args = Args::parse();
 
     fs::create_dir_all(&args.store).with_context(|| {
