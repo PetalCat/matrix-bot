@@ -1,26 +1,27 @@
 [package]
 name = "matrix-ping-bot"
 version = "0.1.0"
+
 edition = "2024"
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+futures-util = "0.3"
+matrix-sdk = { version = "0.7", features = ["e2e-encryption", "sqlite"] }
+mime = "0.3"
+rpassword = { version = "7", optional = true }
+ruma = "0.9"
+serde = { version = "1" }
+serde_derive = { version = "1" }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 url = "2"
-futures-util = "0.3"
-async-trait = "0.1"
 
-# Matrix Rust SDK with E2EE + SQLite store
-matrix-sdk = { version = "0.7", features = ["e2e-encryption", "sqlite"] }
-ruma = "0.9"
-
-# Optional: prompt for password if not provided via env/flag
-rpassword = "7"
-dotenvy = "0.15"
-serde_yaml = "0.9"
-mime = "0.3"
+[features]
+default = ["rpassword"]
