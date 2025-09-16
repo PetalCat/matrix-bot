@@ -70,8 +70,7 @@ impl Command for DiagCommand {
         let device_id = ctx
             .client
             .device_id()
-            .map(|d| d.to_string())
-            .unwrap_or_else(|| "<unknown>".into());
+            .map_or_else(|| "<unknown>".into(), std::string::ToString::to_string);
 
         let is_encrypted = match ctx.room.latest_encryption_state().await {
             Ok(b) => b.is_encrypted(),
@@ -95,7 +94,7 @@ impl Command for DiagCommand {
             format!("backup_state: {}", backup_state),
         ];
         if let Some(v) = bot_verified {
-            lines.push(format!("bot_verified: {}", v));
+            lines.push(format!("bot_verified: {v}"));
         }
 
         if is_encrypted {
@@ -136,7 +135,7 @@ impl Command for HelpCommand {
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut lines = vec!["Available commands:".to_string()];
         for (name, help) in pairs {
-            lines.push(format!("{} — {}", name, help));
+            lines.push(format!("{name} — {help}"));
         }
         send_text(ctx, lines.join("\n")).await
     }
@@ -156,15 +155,12 @@ impl Command for ModeCommand {
     async fn run(&self, ctx: &CommandContext, _args: &str) -> Result<()> {
         let mode = if ctx.dev_active { "dev" } else { "prod" };
         let mut lines = vec![format!("mode: {}", mode)];
-        match mode {
-            "dev" => {
-                lines.push("this instance handles commands that include -d".into());
-                lines.push("example: !diag -d".into());
-            }
-            _ => {
-                lines.push("this instance handles commands without -d".into());
-                lines.push("example: !diag".into());
-            }
+        if mode == "dev" {
+            lines.push("this instance handles commands that include -d".into());
+            lines.push("example: !diag -d".into());
+        } else {
+            lines.push("this instance handles commands without -d".into());
+            lines.push("example: !diag".into());
         }
         send_text(ctx, lines.join("\n")).await
     }
@@ -172,7 +168,7 @@ impl Command for ModeCommand {
 
 fn decorate_dev(text: &str, dev_active: bool) -> String {
     if dev_active {
-        format!("=======DEV MODE=======\n{}", text)
+        format!("=======DEV MODE=======\n{text}")
     } else {
         text.to_string()
     }

@@ -1,10 +1,12 @@
+#![warn(clippy::pedantic)]
 mod commands;
 
+use std::fmt::Write as _;
 use std::{collections::HashMap, fs, io::IsTerminal, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use futures_util::StreamExt;
+use futures_util::StreamExt as _;
 use matrix_sdk::{
     Client,
     SessionMeta,
@@ -46,7 +48,7 @@ use tracing::{info, warn};
     about = "Simple Matrix ping bot with E2EE"
 )]
 struct Args {
-    /// Homeserver base URL, e.g. https://matrix-client.matrix.org
+    /// Homeserver base URL, e.g. `https://matrix-client.matrix.org`.
     #[arg(long, env = "MATRIX_HOMESERVER")]
     homeserver: String,
 
@@ -137,6 +139,7 @@ struct RelayPlan {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     init_tracing();
     // Load .env if present so clap can pick up env vars.
@@ -184,23 +187,22 @@ async fn main() -> Result<()> {
             .context("restoring session")?;
     } else {
         // Treat empty env/arg as missing; avoid prompting in non-interactive (Docker) mode.
-        let password = match args
+        let password = if let Some(p) = args
             .password
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            Some(p) => p.to_owned(),
-            None => {
-                if !std::io::stdin().is_terminal() {
-                    return Err(anyhow!(
-                        "No MATRIX_PASSWORD provided and no stored session. In Docker/non-interactive mode, set MATRIX_PASSWORD env or mount an existing session at {}",
-                        args.session_file.display()
-                    ));
-                }
-                warn!("No password provided via --password or MATRIX_PASSWORD. Prompting...");
-                rpassword::prompt_password("Matrix password: ")?
+            p.to_owned()
+        } else {
+            if !std::io::stdin().is_terminal() {
+                return Err(anyhow!(
+                    "No MATRIX_PASSWORD provided and no stored session. In Docker/non-interactive mode, set MATRIX_PASSWORD env or mount an existing session at {}",
+                    args.session_file.display()
+                ));
             }
+            warn!("No password provided via --password or MATRIX_PASSWORD. Prompting...");
+            rpassword::prompt_password("Matrix password: ")?
         };
 
         info!("Logging in as {}", args.username);
@@ -300,7 +302,7 @@ async fn main() -> Result<()> {
                 MessageType::Notice(n) => Some(n.body.as_str()),
                 _ => None,
             };
-            if let Some(body) = body_opt.map(|b| b.trim())
+            if let Some(body) = body_opt.map(str::trim)
                 && body.starts_with('!') {
                     let mut parts = body.splitn(2, ' ');
                     let cmd = parts.next().unwrap_or("");
@@ -340,9 +342,7 @@ async fn main() -> Result<()> {
                 // Resolve sender display name in the source room
                 let display_name = match room.get_member(&ev.sender).await {
                     Ok(Some(m)) => m
-                        .display_name()
-                        .map(|s| s.to_owned())
-                        .unwrap_or_else(|| ev.sender.localpart().to_string()),
+                        .display_name().map_or_else(|| ev.sender.localpart().to_string(), std::borrow::ToOwned::to_owned),
                     _ => ev.sender.localpart().to_string(),
                 };
                 let display_name_bold = to_bold(&display_name);
@@ -352,22 +352,28 @@ async fn main() -> Result<()> {
                     MessageType::Text(t) => {
                         let (quoted, main) = split_reply_fallback(&t.body);
                         let mut out = String::new();
-                        if let Some(q) = quoted { out.push_str(&format!("↪ {}\n", truncate(&q, 300))); }
-                        out.push_str(&format!("{}: {}", display_name_bold, main.trim()));
+                        if let Some(q) = quoted {
+                            writeln!(out, "↪ {}", truncate(&q, 300)).unwrap();
+                        }
+                        write!(out, "{}: {}", display_name_bold, main.trim()).unwrap();
                         formatted_text = Some(out);
                     }
                     MessageType::Notice(n) => {
                         let (quoted, main) = split_reply_fallback(&n.body);
                         let mut out = String::new();
-                        if let Some(q) = quoted { out.push_str(&format!("↪ {}\n", truncate(&q, 300))); }
-                        out.push_str(&format!("{}: {}", display_name_bold, main.trim()));
+                        if let Some(q) = quoted {
+                            writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
+                        }
+                        write!(out,"{}: {}", display_name_bold, main.trim()).unwrap();
                         formatted_text = Some(out);
                     }
                     MessageType::Emote(e) => {
                         let (quoted, main) = split_reply_fallback(&e.body);
                         let mut out = String::new();
-                        if let Some(q) = quoted { out.push_str(&format!("↪ {}\n", truncate(&q, 300))); }
-                        out.push_str(&format!("{}: * {}", display_name_bold, main.trim()));
+                        if let Some(q) = quoted {
+                             writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
+                            }
+                        write!(out,"{}: * {}", display_name_bold, main.trim()).unwrap();
                         formatted_text = Some(out);
                     }
                     _ => {}
@@ -423,7 +429,7 @@ async fn main() -> Result<()> {
                                 if formatted_text.is_none() && opts.caption_media {
                                     let kind = match &ev.content.msgtype { MessageType::Image(_) => "image", MessageType::File(_) => "file", MessageType::Audio(_) => "audio", MessageType::Video(_) => "video", _ => "" };
                                     if !kind.is_empty() {
-                                    let caption = format!("{}: sent a {}", display_name_bold, kind);
+                                    let caption = format!("{display_name_bold}: sent a {kind}");
                                         let _ = room_handle.send(RoomMessageEventContent::text_plain(caption)).await;
                                     }
                                 }
@@ -557,21 +563,19 @@ async fn resolve_relay_map(client: &Client, cfg: &BotConfig) -> Result<RelayPlan
         let mut resolved: Vec<OwnedRoomId> = Vec::new();
         for room_ref in &cluster.rooms {
             if let Ok(id) = RoomId::parse(room_ref) {
-                resolved.push(id.to_owned());
+                resolved.push(id.clone());
                 continue;
             }
             if room_ref.starts_with('#') {
                 match RoomAliasId::parse(room_ref) {
                     Ok(alias) => match client.resolve_room_alias(&alias).await {
-                        Ok(resp) => resolved.push(resp.room_id.to_owned()),
+                        Ok(resp) => resolved.push(resp.room_id.clone()),
                         Err(e) => {
                             warn!(alias = %room_ref, error = %e, "Failed to resolve room alias; skipping");
-                            continue;
                         }
                     },
                     Err(_) => {
                         warn!(alias = %room_ref, "Invalid room alias; skipping");
-                        continue;
                     }
                 }
             } else {
@@ -686,9 +690,6 @@ async fn handle_sas(_client: Client, sas: SasVerification, auto_confirm: bool) {
                 if auto_confirm && let Err(e) = sas.confirm().await {
                     warn!(error = %e, "Failed to confirm SAS");
                 }
-            }
-            SasState::KeysExchanged { emojis: None, .. } => {
-                // No emojis available yet; do nothing.
             }
             SasState::Done { .. } => {
                 info!("Verification completed");
