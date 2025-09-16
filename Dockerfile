@@ -12,7 +12,7 @@ WORKDIR /src
 # Cache deps
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src && echo "fn main(){}" > src/main.rs
-RUN cargo build --release || true
+RUN cargo build --release
 
 # Build actual app
 COPY . .

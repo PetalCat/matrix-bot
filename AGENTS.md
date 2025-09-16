@@ -17,8 +17,7 @@ Simple Matrix bot using the Matrix Rust SDK with end‑to‑end encryption enabl
 ## Build
 
 ```sh
-cd matrix-ping-bot
-cargo build --release
+build --release
 ```
 
 ## Run
@@ -117,18 +116,21 @@ clusters:
 ## Deploy
 
 - Docker (build + run):
-  - Build: `cd matrix-ping-bot && docker build -t matrix-ping-bot:local .`
-  - Run: - `docker run --rm -it \
--e MATRIX_HOMESERVER=... \
--e MATRIX_USERNAME=... \
--e MATRIX_PASSWORD=... \
--e MATRIX_CONFIG=/app/config.yaml \
--v $(pwd)/config.yaml:/app/config.yaml:ro \
--v $(pwd)/data:/data \
-matrix-ping-bot:local`
+  - Build: `docker build -t matrix-ping-bot:local .`
+  - Run:
+  ```sh
+  docker run --rm -it \
+    -e MATRIX_HOMESERVER=... \
+    -e MATRIX_USERNAME=... \
+    -e MATRIX_PASSWORD=... \
+    -e MATRIX_CONFIG=/app/config.yaml \
+    -v $(pwd)/config.yaml:/app/config.yaml:ro \
+    -v $(pwd)/data:/data \
+    matrix-ping-bot:local
+  ```
 - Docker Compose:
   - Put secrets in `.env` next to `docker-compose.yml` (MATRIX\_\* vars).
-  - `cd matrix-ping-bot && docker compose up -d --build`
+  - `docker compose up -d --build`
   - Data persists in `matrix-ping-bot/data/` (session + store).
 - systemd service (bare metal):
   - Install binary: `cargo build --release` then copy `target/release/matrix-ping-bot` to `/opt/matrix-ping-bot/`.

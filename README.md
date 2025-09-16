@@ -12,12 +12,3 @@ Simple Matrix bot using the Matrix Rust SDK with end‑to‑end encryption enabl
 ## Requirements
 
 - Rust
-
-## Build
-
-```sh
-cd matrix-ping-bot
-cargo build --release
-```
-
-## Run
