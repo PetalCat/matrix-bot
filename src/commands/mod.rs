@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use matrix_sdk::room::Room;
-use matrix_sdk::Client;
-use ruma::events::room::message::RoomMessageEventContent;
+use matrix_sdk::{Client, room::Room, ruma::events::room::message::RoomMessageEventContent};
+
 use tracing::warn;
 
 #[async_trait]
@@ -74,8 +73,8 @@ impl Command for DiagCommand {
             .map(|d| d.to_string())
             .unwrap_or_else(|| "<unknown>".into());
 
-        let is_encrypted = match ctx.room.is_encrypted().await {
-            Ok(b) => b,
+        let is_encrypted = match ctx.room.latest_encryption_state().await {
+            Ok(b) => b.is_encrypted(),
             Err(e) => {
                 warn!(error = %e, room_id = %ctx.room.room_id(), "Failed to check encryption state");
                 false

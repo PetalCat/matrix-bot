@@ -1,35 +1,43 @@
-use std::io::IsTerminal;
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+mod commands;
+
+use std::{collections::HashMap, fs, io::IsTerminal, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use futures_util::StreamExt;
-// media helpers used via client.media()
-use matrix_sdk::attachment::AttachmentConfig;
-use matrix_sdk::encryption::verification::{
-    SasState, SasVerification, Verification, VerificationRequest, VerificationRequestState,
-};
-use matrix_sdk::room::Room;
 use matrix_sdk::{
-    Client, SessionMeta,
+    Client,
+    SessionMeta,
+    // media helpers used via client.media()
+    attachment::AttachmentConfig,
+    authentication::{SessionTokens, matrix::MatrixSession},
     config::SyncSettings,
-    matrix_auth::{MatrixSession, MatrixSessionTokens},
-    ruma::{self, events::room::member::MembershipState},
+    encryption::verification::{
+        SasState, SasVerification, Verification, VerificationRequest, VerificationRequestState,
+    },
+    room::Room,
+    ruma::{
+        OwnedRoomId, RoomAliasId, RoomId,
+        events::{
+            key::verification::{
+                request::ToDeviceKeyVerificationRequestEvent,
+                start::ToDeviceKeyVerificationStartEvent,
+            },
+            room::{
+                member::{MembershipState, StrippedRoomMemberEvent},
+                message::{
+                    AudioMessageEventContent, FileMessageEventContent, ImageMessageEventContent,
+                    MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
+                    VideoMessageEventContent,
+                },
+            },
+        },
+    },
 };
 use mime::Mime;
-use ruma::events::key::verification::{
-    request::ToDeviceKeyVerificationRequestEvent, start::ToDeviceKeyVerificationStartEvent,
-};
-use ruma::events::room::member::StrippedRoomMemberEvent;
-use ruma::events::room::message::{
-    AudioMessageEventContent, FileMessageEventContent, ImageMessageEventContent, MessageType,
-    OriginalSyncRoomMessageEvent, RoomMessageEventContent, VideoMessageEventContent,
-};
-use ruma::{OwnedRoomId, RoomAliasId, RoomId};
+
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
-
-mod commands;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -165,7 +173,7 @@ async fn main() -> Result<()> {
                 user_id: session.user_id.parse().context("invalid stored user_id")?,
                 device_id: session.device_id.into(),
             },
-            tokens: MatrixSessionTokens {
+            tokens: SessionTokens {
                 access_token: session.access_token,
                 refresh_token: session.refresh_token,
             },
@@ -789,7 +797,7 @@ async fn reupload_image(
     let mime = parse_mime(img.info.as_ref().and_then(|i| i.mimetype.as_deref()));
     let data_opt = client
         .media()
-        .get_file(img.clone(), true)
+        .get_file(&img.clone(), true)
         .await
         .context("downloading image")?;
     let data = data_opt.ok_or_else(|| anyhow!("image bytes missing"))?;
@@ -804,7 +812,7 @@ async fn reupload_file(
     let mime = parse_mime(file.info.as_ref().and_then(|i| i.mimetype.as_deref()));
     let data_opt = client
         .media()
-        .get_file(file.clone(), true)
+        .get_file(&file.clone(), true)
         .await
         .context("downloading file")?;
     let data = data_opt.ok_or_else(|| anyhow!("file bytes missing"))?;
@@ -819,7 +827,7 @@ async fn reupload_audio(
     let mime = parse_mime(audio.info.as_ref().and_then(|i| i.mimetype.as_deref()));
     let data_opt = client
         .media()
-        .get_file(audio.clone(), true)
+        .get_file(&audio.clone(), true)
         .await
         .context("downloading audio")?;
     let data = data_opt.ok_or_else(|| anyhow!("audio bytes missing"))?;
@@ -834,7 +842,7 @@ async fn reupload_video(
     let mime = parse_mime(video.info.as_ref().and_then(|i| i.mimetype.as_deref()));
     let data_opt = client
         .media()
-        .get_file(video.clone(), true)
+        .get_file(&video.clone(), true)
         .await
         .context("downloading video")?;
     let data = data_opt.ok_or_else(|| anyhow!("video bytes missing"))?;
@@ -846,7 +854,7 @@ async fn send_attachment(
     body: &str,
     mime: &Mime,
     data: Vec<u8>,
-) -> matrix_sdk::Result<ruma::api::client::message::send_message_event::v3::Response> {
+) -> matrix_sdk::Result<matrix_sdk::ruma::api::client::message::send_message_event::v3::Response> {
     let config = AttachmentConfig::new();
     room.send_attachment(body, &mime.clone(), data, config)
         .await
