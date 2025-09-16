@@ -262,14 +262,8 @@ async fn main() -> Result<()> {
 
     // Message handler: relay between configured room clusters, and keep existing commands
     let client_for_handler = client.clone();
-    let relay_handler = Arc::clone(&relay);
-    let commands_handler = Arc::clone(&commands);
-    let dev_active_handler = dev_active;
     client.add_event_handler(move |ev: OriginalSyncRoomMessageEvent, room: Room| {
         let client = client_for_handler.clone();
-        let relay = Arc::clone(&relay_handler);
-        let commands = Arc::clone(&commands_handler);
-        let dev_active = dev_active_handler;
         async move {
             // Ignore own messages
             let Some(own_id) = client.user_id() else { return; };
@@ -369,8 +363,8 @@ async fn main() -> Result<()> {
                         let (quoted, main) = split_reply_fallback(&e.body);
                         let mut out = String::new();
                         if let Some(q) = quoted {
-                             writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
-                            }
+                            writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
+                        }
                         write!(out,"{}: * {}", display_name_bold, main.trim()).unwrap();
                         formatted_text = Some(out);
                     }
