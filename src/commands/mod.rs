@@ -28,10 +28,10 @@ pub type CommandMap = std::collections::HashMap<String, Arc<dyn Command>>;
 
 pub fn default_registry() -> CommandMap {
     let mut map: CommandMap = CommandMap::new();
-    map.insert("!ping".into(), Arc::new(PingCommand));
-    map.insert("!diag".into(), Arc::new(DiagCommand));
-    map.insert("!help".into(), Arc::new(HelpCommand));
-    map.insert("!mode".into(), Arc::new(ModeCommand));
+    map.insert("!ping".to_owned(), Arc::new(PingCommand));
+    map.insert("!diag".to_owned(), Arc::new(DiagCommand));
+    map.insert("!help".to_owned(), Arc::new(HelpCommand));
+    map.insert("!mode".to_owned(), Arc::new(ModeCommand));
     map
 }
 
@@ -100,10 +100,12 @@ impl Command for DiagCommand {
         if is_encrypted {
             lines.push(
                 "hint: if messages don’t decrypt, verify the bridge/device and send a new message."
-                    .into(),
+                    .to_owned(),
             );
         } else {
-            lines.push("hint: room not encrypted; encryption diagnostics not applicable.".into());
+            lines.push(
+                "hint: room not encrypted; encryption diagnostics not applicable.".to_owned(),
+            );
         }
 
         let msg = lines.join("\n");
@@ -156,11 +158,11 @@ impl Command for ModeCommand {
         let mode = if ctx.dev_active { "dev" } else { "prod" };
         let mut lines = vec![format!("mode: {}", mode)];
         if mode == "dev" {
-            lines.push("this instance handles commands that include -d".into());
-            lines.push("example: !diag -d".into());
+            lines.push("this instance handles commands that include -d".to_owned());
+            lines.push("example: !diag -d".to_owned());
         } else {
-            lines.push("this instance handles commands without -d".into());
-            lines.push("example: !diag".into());
+            lines.push("this instance handles commands without -d".to_owned());
+            lines.push("example: !diag".to_owned());
         }
         send_text(ctx, lines.join("\n")).await
     }
