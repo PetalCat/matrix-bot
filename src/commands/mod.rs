@@ -2,16 +2,18 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use matrix_sdk::{Client};
 use matrix_sdk::room::Room;
+use matrix_sdk::Client;
 use ruma::events::room::message::RoomMessageEventContent;
-use tracing::{info, warn};
+use tracing::warn;
 
 #[async_trait]
 pub trait Command: Send + Sync {
     fn name(&self) -> &'static str;
     fn help(&self) -> &'static str;
-    fn dev_only(&self) -> bool { false }
+    fn dev_only(&self) -> bool {
+        false
+    }
     async fn run(&self, ctx: &CommandContext, args: &str) -> Result<()>;
 }
 
@@ -39,8 +41,12 @@ pub struct PingCommand;
 
 #[async_trait]
 impl Command for PingCommand {
-    fn name(&self) -> &'static str { "!ping" }
-    fn help(&self) -> &'static str { "Responds with pong." }
+    fn name(&self) -> &'static str {
+        "!ping"
+    }
+    fn help(&self) -> &'static str {
+        "Responds with pong."
+    }
 
     async fn run(&self, ctx: &CommandContext, _args: &str) -> Result<()> {
         send_text(ctx, "pong").await
@@ -51,11 +57,18 @@ pub struct DiagCommand;
 
 #[async_trait]
 impl Command for DiagCommand {
-    fn name(&self) -> &'static str { "!diag" }
-    fn help(&self) -> &'static str { "Show encryption/session diagnostics." }
+    fn name(&self) -> &'static str {
+        "!diag"
+    }
+    fn help(&self) -> &'static str {
+        "Show encryption/session diagnostics."
+    }
 
     async fn run(&self, ctx: &CommandContext, _args: &str) -> Result<()> {
-        let user_id = match ctx.client.user_id() { Some(u) => u.to_string(), None => "<unknown>".into() };
+        let user_id = match ctx.client.user_id() {
+            Some(u) => u.to_string(),
+            None => "<unknown>".into(),
+        };
         let device_id = ctx
             .client
             .device_id()
@@ -83,10 +96,15 @@ impl Command for DiagCommand {
             format!("room_encrypted: {}", is_encrypted),
             format!("backup_state: {}", backup_state),
         ];
-        if let Some(v) = bot_verified { lines.push(format!("bot_verified: {}", v)); }
+        if let Some(v) = bot_verified {
+            lines.push(format!("bot_verified: {}", v));
+        }
 
         if is_encrypted {
-            lines.push("hint: if messages don’t decrypt, verify the bridge/device and send a new message.".into());
+            lines.push(
+                "hint: if messages don’t decrypt, verify the bridge/device and send a new message."
+                    .into(),
+            );
         } else {
             lines.push("hint: room not encrypted; encryption diagnostics not applicable.".into());
         }
@@ -103,8 +121,12 @@ pub struct HelpCommand;
 
 #[async_trait]
 impl Command for HelpCommand {
-    fn name(&self) -> &'static str { "!help" }
-    fn help(&self) -> &'static str { "List available commands." }
+    fn name(&self) -> &'static str {
+        "!help"
+    }
+    fn help(&self) -> &'static str {
+        "List available commands."
+    }
 
     async fn run(&self, ctx: &CommandContext, _args: &str) -> Result<()> {
         let mut pairs: Vec<(String, String)> = ctx
@@ -126,8 +148,12 @@ pub struct ModeCommand;
 
 #[async_trait]
 impl Command for ModeCommand {
-    fn name(&self) -> &'static str { "!mode" }
-    fn help(&self) -> &'static str { "Show current mode (dev/prod) and how to target it." }
+    fn name(&self) -> &'static str {
+        "!mode"
+    }
+    fn help(&self) -> &'static str {
+        "Show current mode (dev/prod) and how to target it."
+    }
 
     async fn run(&self, ctx: &CommandContext, _args: &str) -> Result<()> {
         let mode = if ctx.dev_active { "dev" } else { "prod" };

@@ -1,36 +1,42 @@
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 use std::io::IsTerminal;
+use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use futures_util::StreamExt;
+// media helpers used via client.media()
+use matrix_sdk::attachment::AttachmentConfig;
+use matrix_sdk::encryption::verification::{
+    SasState, SasVerification, Verification, VerificationRequest, VerificationRequestState,
+};
+use matrix_sdk::room::Room;
 use matrix_sdk::{
     config::SyncSettings,
     matrix_auth::{MatrixSession, MatrixSessionTokens},
     ruma::{self, events::room::member::MembershipState},
     Client, SessionMeta,
 };
-use matrix_sdk::room::Room;
-use ruma::events::room::member::StrippedRoomMemberEvent;
-use ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent, ImageMessageEventContent, FileMessageEventContent, AudioMessageEventContent, VideoMessageEventContent};
-use ruma::{OwnedRoomId, RoomId, RoomAliasId};
-use ruma::events::key::verification::{
-    request::ToDeviceKeyVerificationRequestEvent,
-    start::ToDeviceKeyVerificationStartEvent,
-};
-use matrix_sdk::encryption::verification::{SasState, Verification, VerificationRequestState, VerificationRequest, SasVerification};
-// use tokio::time::{timeout, Duration};
-use serde::{Deserialize, Serialize};
-use tracing::{error, info, warn};
-use serde_yaml;
-// media helpers used via client.media()
-use matrix_sdk::attachment::AttachmentConfig;
 use mime::Mime;
+use ruma::events::key::verification::{
+    request::ToDeviceKeyVerificationRequestEvent, start::ToDeviceKeyVerificationStartEvent,
+};
+use ruma::events::room::member::StrippedRoomMemberEvent;
+use ruma::events::room::message::{
+    AudioMessageEventContent, FileMessageEventContent, ImageMessageEventContent, MessageType,
+    OriginalSyncRoomMessageEvent, RoomMessageEventContent, VideoMessageEventContent,
+};
+use ruma::{OwnedRoomId, RoomAliasId, RoomId};
+use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 
 mod commands;
 
 #[derive(Parser, Debug)]
-#[command(name = "matrix-ping-bot", version, about = "Simple Matrix ping bot with E2EE")]
+#[command(
+    name = "matrix-ping-bot",
+    version,
+    about = "Simple Matrix ping bot with E2EE"
+)]
 struct Args {
     /// Homeserver base URL, e.g. https://matrix-client.matrix.org
     #[arg(long, env = "MATRIX_HOMESERVER")]
@@ -41,11 +47,11 @@ struct Args {
     username: String,
 
     /// Password (if omitted, will prompt if needed)
-    #[arg(long, env = "MATRIX_PASSWORD")] 
+    #[arg(long, env = "MATRIX_PASSWORD")]
     password: Option<String>,
 
     /// Directory for persistent state (encryption keys, sync cache)
-    #[arg(long, env = "MATRIX_STORE", default_value = "./bot-store")] 
+    #[arg(long, env = "MATRIX_STORE", default_value = "./bot-store")]
     store: PathBuf,
 
     /// JSON session file for access token/device info
@@ -53,7 +59,7 @@ struct Args {
     session_file: PathBuf,
 
     /// Device display name
-    #[arg(long, env = "MATRIX_DEVICE_NAME", default_value = "matrix-ping-bot")] 
+    #[arg(long, env = "MATRIX_DEVICE_NAME", default_value = "matrix-ping-bot")]
     device_name: String,
 
     /// Path to YAML config describing room clusters to relay between
@@ -93,21 +99,28 @@ struct SavedSession {
 #[derive(Debug, Deserialize, Clone)]
 struct BotConfig {
     clusters: Vec<RoomCluster>,
-    #[serde(default)] reupload_media: Option<bool>,
-    #[serde(default)] caption_media: Option<bool>,
-    #[serde(default)] dev_mode: Option<bool>,
+    #[serde(default)]
+    reupload_media: Option<bool>,
+    #[serde(default)]
+    caption_media: Option<bool>,
+    #[serde(default)]
+    dev_mode: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 struct RoomCluster {
-    name: Option<String>,
     rooms: Vec<String>,
-    #[serde(default)] reupload_media: Option<bool>,
-    #[serde(default)] caption_media: Option<bool>,
+    #[serde(default)]
+    reupload_media: Option<bool>,
+    #[serde(default)]
+    caption_media: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RelayOptions { reupload_media: bool, caption_media: bool }
+struct RelayOptions {
+    reupload_media: bool,
+    caption_media: bool,
+}
 
 #[derive(Debug, Clone)]
 struct RelayPlan {
@@ -132,9 +145,8 @@ async fn main() -> Result<()> {
     }
     let args = Args::parse();
 
-    fs::create_dir_all(&args.store).with_context(|| {
-        format!("creating store directory at {}", args.store.display())
-    })?;
+    fs::create_dir_all(&args.store)
+        .with_context(|| format!("creating store directory at {}", args.store.display()))?;
 
     // Build client with SQLite store to persist E2EE state
     let client = Client::builder()
@@ -158,10 +170,18 @@ async fn main() -> Result<()> {
                 refresh_token: session.refresh_token,
             },
         };
-        client.restore_session(matrix_session).await.context("restoring session")?;
+        client
+            .restore_session(matrix_session)
+            .await
+            .context("restoring session")?;
     } else {
         // Treat empty env/arg as missing; avoid prompting in non-interactive (Docker) mode.
-        let password = match args.password.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let password = match args
+            .password
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(p) => p.to_owned(),
             None => {
                 if !std::io::stdin().is_terminal() {
@@ -218,7 +238,9 @@ async fn main() -> Result<()> {
                 if ev.content.membership != MembershipState::Invite {
                     return;
                 }
-                let Some(own_id) = client.user_id() else { return; };
+                let Some(own_id) = client.user_id() else {
+                    return;
+                };
                 if ev.state_key != own_id.as_str() {
                     return;
                 }
@@ -453,10 +475,13 @@ async fn main() -> Result<()> {
     });
     // End emoji SAS handlers
 
-
     // Start syncing with configured timeout
-    info!(timeout_ms = args.sync_timeout_ms, "Starting sync… Press Ctrl+C to stop.");
-    let settings = SyncSettings::new().timeout(std::time::Duration::from_millis(args.sync_timeout_ms));
+    info!(
+        timeout_ms = args.sync_timeout_ms,
+        "Starting sync… Press Ctrl+C to stop."
+    );
+    let settings =
+        SyncSettings::new().timeout(std::time::Duration::from_millis(args.sync_timeout_ms));
     client
         .sync(settings)
         .await
@@ -547,7 +572,10 @@ async fn resolve_relay_map(client: &Client, cfg: &BotConfig) -> Result<RelayPlan
         }
 
         // Resolve options with precedence: cluster overrides -> cfg defaults -> hard defaults
-        let reupload = cluster.reupload_media.or(cfg.reupload_media).unwrap_or(true);
+        let reupload = cluster
+            .reupload_media
+            .or(cfg.reupload_media)
+            .unwrap_or(true);
         let caption = cluster.caption_media.or(cfg.caption_media).unwrap_or(true);
 
         // For each room in the cluster, set its peers and options
@@ -556,22 +584,44 @@ async fn resolve_relay_map(client: &Client, cfg: &BotConfig) -> Result<RelayPlan
             map.entry(r.clone())
                 .and_modify(|v| {
                     // merge peers (dedup naive)
-                    for p in &peers { if !v.contains(p) { v.push(p.clone()); } }
+                    for p in &peers {
+                        if !v.contains(p) {
+                            v.push(p.clone());
+                        }
+                    }
                 })
                 .or_insert(peers);
-            opts.insert(r.clone(), RelayOptions { reupload_media: reupload, caption_media: caption });
+            opts.insert(
+                r.clone(),
+                RelayOptions {
+                    reupload_media: reupload,
+                    caption_media: caption,
+                },
+            );
         }
     }
 
-    info!(clusters = cfg.clusters.len(), rooms = map.len(), "Loaded relay mapping");
+    info!(
+        clusters = cfg.clusters.len(),
+        rooms = map.len(),
+        "Loaded relay mapping"
+    );
     for (from, peers) in &map {
-        let peer_list = peers.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", ");
+        let peer_list = peers
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         info!(from = %from, peers = %peer_list, "Relay mapping entry");
     }
     Ok(RelayPlan { map, opts })
 }
 
-async fn handle_verification_request(client: Client, request: VerificationRequest, auto_confirm: bool) {
+async fn handle_verification_request(
+    client: Client,
+    request: VerificationRequest,
+    auto_confirm: bool,
+) {
     info!(user = %request.other_user_id(), "Accepting verification request");
     if let Err(e) = request.accept().await {
         warn!(error = %e, "Failed to accept verification request");
@@ -601,18 +651,33 @@ async fn handle_verification_request(client: Client, request: VerificationReques
 
 async fn handle_sas(_client: Client, sas: SasVerification, auto_confirm: bool) {
     info!(user = %sas.other_device().user_id(), device = %sas.other_device().device_id(), "Starting SAS verification");
-    if let Err(e) = sas.accept().await { warn!(error = %e, "Failed to accept SAS"); return; }
+    if let Err(e) = sas.accept().await {
+        warn!(error = %e, "Failed to accept SAS");
+        return;
+    }
 
     let mut stream = sas.changes();
     while let Some(state) = stream.next().await {
         match state.clone() {
             SasState::KeysExchanged { emojis, .. } => {
                 if let Some(e) = emojis {
-                    let emoji_string = e.emojis.iter().map(|em| em.symbol).collect::<Vec<_>>().join(" ");
-                    let descriptions = e.emojis.iter().map(|em| em.description).collect::<Vec<_>>().join(" ");
+                    let emoji_string = e
+                        .emojis
+                        .iter()
+                        .map(|em| em.symbol)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let descriptions = e
+                        .emojis
+                        .iter()
+                        .map(|em| em.description)
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     println!("SAS emojis: {emoji_string}\nSAS names:  {descriptions}");
                     if auto_confirm {
-                        if let Err(e) = sas.confirm().await { warn!(error = %e, "Failed to confirm SAS"); }
+                        if let Err(e) = sas.confirm().await {
+                            warn!(error = %e, "Failed to confirm SAS");
+                        }
                     }
                 }
             }
@@ -640,7 +705,9 @@ fn load_session(path: &PathBuf) -> Result<Option<SavedSession>> {
 }
 
 fn save_session(path: &PathBuf, session: &SavedSession) -> Result<()> {
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let data = serde_json::to_string_pretty(session)?;
     fs::write(path, data).with_context(|| format!("writing session file at {}", path.display()))?;
     Ok(())
@@ -648,7 +715,9 @@ fn save_session(path: &PathBuf, session: &SavedSession) -> Result<()> {
 
 fn truncate(s: &str, max: usize) -> String {
     let mut out = String::new();
-    for ch in s.chars().take(max) { out.push(ch); }
+    for ch in s.chars().take(max) {
+        out.push(ch);
+    }
     out
 }
 
@@ -671,7 +740,10 @@ fn split_reply_fallback(body: &str) -> (Option<String>, String) {
     if let Some(sep_idx) = body.find("\n\n") {
         let (quoted_block, rest) = body.split_at(sep_idx);
         // rest starts with two newlines
-        let main = rest.trim_start_matches('\n').trim_start_matches('\n').to_string();
+        let main = rest
+            .trim_start_matches('\n')
+            .trim_start_matches('\n')
+            .to_string();
         // Collect quoted lines without leading "> "
         let mut quoted_lines = Vec::new();
         for line in quoted_block.lines() {
@@ -691,51 +763,90 @@ fn split_reply_fallback(body: &str) -> (Option<String>, String) {
 }
 
 fn parse_mime(opt: Option<&str>) -> Mime {
-    opt.and_then(|s| s.parse::<Mime>().ok()).unwrap_or(mime::APPLICATION_OCTET_STREAM)
+    opt.and_then(|s| s.parse::<Mime>().ok())
+        .unwrap_or(mime::APPLICATION_OCTET_STREAM)
 }
 
 fn extract_dev_flag(args: &str) -> (String, bool) {
     let mut dev = false;
     let mut kept: Vec<&str> = Vec::new();
     for tok in args.split_whitespace() {
-        if tok == "-d" || tok == "--dev" { dev = true; } else { kept.push(tok); }
+        if tok == "-d" || tok == "--dev" {
+            dev = true;
+        } else {
+            kept.push(tok);
+        }
     }
     (kept.join(" "), dev)
 }
 
-async fn reupload_image(client: &Client, img: &ImageMessageEventContent) -> Result<(String, Mime, Vec<u8>)> {
+async fn reupload_image(
+    client: &Client,
+    img: &ImageMessageEventContent,
+) -> Result<(String, Mime, Vec<u8>)> {
     let body = img.body.clone();
     let mime = parse_mime(img.info.as_ref().and_then(|i| i.mimetype.as_deref()));
-    let data_opt = client.media().get_file(img.clone(), true).await.context("downloading image")?;
+    let data_opt = client
+        .media()
+        .get_file(img.clone(), true)
+        .await
+        .context("downloading image")?;
     let data = data_opt.ok_or_else(|| anyhow!("image bytes missing"))?;
     Ok((body, mime, data))
 }
 
-async fn reupload_file(client: &Client, file: &FileMessageEventContent) -> Result<(String, Mime, Vec<u8>)> {
+async fn reupload_file(
+    client: &Client,
+    file: &FileMessageEventContent,
+) -> Result<(String, Mime, Vec<u8>)> {
     let body = file.body.clone();
     let mime = parse_mime(file.info.as_ref().and_then(|i| i.mimetype.as_deref()));
-    let data_opt = client.media().get_file(file.clone(), true).await.context("downloading file")?;
+    let data_opt = client
+        .media()
+        .get_file(file.clone(), true)
+        .await
+        .context("downloading file")?;
     let data = data_opt.ok_or_else(|| anyhow!("file bytes missing"))?;
     Ok((body, mime, data))
 }
 
-async fn reupload_audio(client: &Client, audio: &AudioMessageEventContent) -> Result<(String, Mime, Vec<u8>)> {
+async fn reupload_audio(
+    client: &Client,
+    audio: &AudioMessageEventContent,
+) -> Result<(String, Mime, Vec<u8>)> {
     let body = audio.body.clone();
     let mime = parse_mime(audio.info.as_ref().and_then(|i| i.mimetype.as_deref()));
-    let data_opt = client.media().get_file(audio.clone(), true).await.context("downloading audio")?;
+    let data_opt = client
+        .media()
+        .get_file(audio.clone(), true)
+        .await
+        .context("downloading audio")?;
     let data = data_opt.ok_or_else(|| anyhow!("audio bytes missing"))?;
     Ok((body, mime, data))
 }
 
-async fn reupload_video(client: &Client, video: &VideoMessageEventContent) -> Result<(String, Mime, Vec<u8>)> {
+async fn reupload_video(
+    client: &Client,
+    video: &VideoMessageEventContent,
+) -> Result<(String, Mime, Vec<u8>)> {
     let body = video.body.clone();
     let mime = parse_mime(video.info.as_ref().and_then(|i| i.mimetype.as_deref()));
-    let data_opt = client.media().get_file(video.clone(), true).await.context("downloading video")?;
+    let data_opt = client
+        .media()
+        .get_file(video.clone(), true)
+        .await
+        .context("downloading video")?;
     let data = data_opt.ok_or_else(|| anyhow!("video bytes missing"))?;
     Ok((body, mime, data))
 }
 
-async fn send_attachment(room: &Room, body: &str, mime: &Mime, data: Vec<u8>) -> matrix_sdk::Result<ruma::api::client::message::send_message_event::v3::Response> {
+async fn send_attachment(
+    room: &Room,
+    body: &str,
+    mime: &Mime,
+    data: Vec<u8>,
+) -> matrix_sdk::Result<ruma::api::client::message::send_message_event::v3::Response> {
     let config = AttachmentConfig::new();
-    room.send_attachment(body, &mime.clone(), data, config).await
+    room.send_attachment(body, &mime.clone(), data, config)
+        .await
 }
