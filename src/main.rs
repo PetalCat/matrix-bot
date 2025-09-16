@@ -239,10 +239,8 @@ async fn main() -> Result<()> {
 
     // Auto-join handler for invites
     if !args.no_autojoin {
-        let client_for_handler = client.clone();
-        client.add_event_handler(move |ev: StrippedRoomMemberEvent, room: Room| {
-            let client = client_for_handler.clone();
-            async move {
+        client.add_event_handler(
+            async move |ev: StrippedRoomMemberEvent, room: Room, client: Client| {
                 if ev.content.membership != MembershipState::Invite {
                     return;
                 }
@@ -256,187 +254,183 @@ async fn main() -> Result<()> {
                 if let Err(e) = room.join().await {
                     warn!(error = %e, "Failed to accept invite");
                 }
-            }
-        });
+            },
+        );
     }
 
     // Message handler: relay between configured room clusters, and keep existing commands
-    let client_for_handler = client.clone();
-    client.add_event_handler(move |ev: OriginalSyncRoomMessageEvent, room: Room| {
-        let client = client_for_handler.clone();
-        async move {
-            // Ignore own messages
-            let Some(own_id) = client.user_id() else { return; };
-            if ev.sender == own_id { return; }
+    client.add_event_handler(async move |ev: OriginalSyncRoomMessageEvent, room: Room, client: Client| {
+        // Ignore own messages
+        let Some(own_id) = client.user_id() else { return; };
+        if ev.sender == own_id { return; }
 
-            // Log incoming message details for diagnostics
-            let msg_kind = match &ev.content.msgtype {
-                MessageType::Text(_) => "text",
-                MessageType::Notice(_) => "notice",
-                MessageType::Emote(_) => "emote",
-                MessageType::Image(_) => "image",
-                MessageType::File(_) => "file",
-                MessageType::Audio(_) => "audio",
-                MessageType::Video(_) => "video",
-                MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::VerificationRequest(_) | _ => "other",
-            };
-            let body_snippet: Option<String> = match &ev.content.msgtype {
-                MessageType::Text(t) => Some(truncate(&t.body, 200)),
-                MessageType::Notice(n) => Some(truncate(&n.body, 200)),
-                MessageType::Emote(e) => Some(truncate(&e.body, 200)),
-                MessageType::Audio(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => None,
-            };
-            info!(room_id = %room.room_id(), sender = %ev.sender, kind = %msg_kind, body = ?body_snippet, "Incoming message");
+        // Log incoming message details for diagnostics
+        let msg_kind = match &ev.content.msgtype {
+            MessageType::Text(_) => "text",
+            MessageType::Notice(_) => "notice",
+            MessageType::Emote(_) => "emote",
+            MessageType::Image(_) => "image",
+            MessageType::File(_) => "file",
+            MessageType::Audio(_) => "audio",
+            MessageType::Video(_) => "video",
+            MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::VerificationRequest(_) | _ => "other",
+        };
+        let body_snippet: Option<String> = match &ev.content.msgtype {
+            MessageType::Text(t) => Some(truncate(&t.body, 200)),
+            MessageType::Notice(n) => Some(truncate(&n.body, 200)),
+            MessageType::Emote(e) => Some(truncate(&e.body, 200)),
+            MessageType::Audio(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => None,
+        };
+        info!(room_id = %room.room_id(), sender = %ev.sender, kind = %msg_kind, body = ?body_snippet, "Incoming message");
 
-            // Plain text/notice messages; parse command if the body starts with '!'
-            let body_opt = match &ev.content.msgtype {
-                MessageType::Text(t) => Some(t.body.as_str()),
-                MessageType::Notice(n) => Some(n.body.as_str()),
-                MessageType::Audio(_) | MessageType::Emote(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => None,
-            };
-            if let Some(body) = body_opt.map(str::trim)
-                && body.starts_with('!') {
-                    let mut parts = body.splitn(2, ' ');
-                    let cmd = parts.next().unwrap_or("");
-                    let args_raw = parts.next().unwrap_or("").trim();
-                    if let Some(handler) = commands.get(cmd) {
-                        let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
-                        // Enforce env selection via -d flag:
-                        // - prod (dev_active=false) only handles commands WITHOUT -d
-                        // - dev  (dev_active=true)  only handles commands WITH -d
-                        if arg_dev_flag != dev_active {
-                            info!(command = %cmd, dev_flag = arg_dev_flag, dev_active = dev_active, "Ignoring command due to env mismatch");
-                        } else if handler.dev_only() && !dev_active {
-                            info!(command = %cmd, "Ignoring dev-only command in prod mode");
-                        } else {
-                            let ctx = crate::commands::CommandContext {
-                                client: client.clone(),
-                                room: room.clone(),
-                                commands: Arc::clone(&commands),
-                                dev_active,
-                            };
-                            if let Err(e) = handler.run(&ctx, &args_clean).await {
-                                warn!(error = %e, command = %cmd, "Command failed");
-                            }
-                        }
-                    }
-                }
-
-            // Relay to rooms in the same cluster.
-            // - For text/notice/emote: send as plain text "DisplayName: message".
-            // - For other types: forward original content unchanged.
-            if dev_active {
-                info!(room_id = %room.room_id(), "Dev mode active: relay disabled");
-            } else {
-                let source_id = room.room_id().to_owned();
-                if let Some(targets) = relay.map.get(&source_id).cloned() {
-                let opts = relay.opts.get(&source_id).copied().unwrap_or(RelayOptions { reupload_media: true, caption_media: true });
-                // Resolve sender display name in the source room
-                let display_name = match room.get_member(&ev.sender).await {
-                    Ok(Some(m)) => m
-                        .display_name().unwrap_or_else(|| ev.sender.localpart()).to_owned(),
-                    _ => ev.sender.localpart().to_owned(),
-                };
-                let display_name_bold = to_bold(&display_name);
-
-                let mut formatted_text: Option<String> = None;
-                match &ev.content.msgtype {
-                    MessageType::Text(t) => {
-                        let (quoted, main) = split_reply_fallback(&t.body);
-                        let mut out = String::new();
-                        if let Some(q) = quoted {
-                            writeln!(out, "↪ {}", truncate(&q, 300)).unwrap();
-                        }
-                        write!(out, "{}: {}", display_name_bold, main.trim()).unwrap();
-                        formatted_text = Some(out);
-                    }
-                    MessageType::Notice(n) => {
-                        let (quoted, main) = split_reply_fallback(&n.body);
-                        let mut out = String::new();
-                        if let Some(q) = quoted {
-                            writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
-                        }
-                        write!(out,"{}: {}", display_name_bold, main.trim()).unwrap();
-                        formatted_text = Some(out);
-                    }
-                    MessageType::Emote(e) => {
-                        let (quoted, main) = split_reply_fallback(&e.body);
-                        let mut out = String::new();
-                        if let Some(q) = quoted {
-                            writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
-                        }
-                        write!(out,"{}: * {}", display_name_bold, main.trim()).unwrap();
-                        formatted_text = Some(out);
-                    }
-                    MessageType::Audio(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => {}
-                }
-
-                for target_id in targets {
-                    if target_id == source_id { continue; }
-                    if let Some(room_handle) = client.get_room(&target_id) {
-                        let send_res = if let Some(text) = &formatted_text {
-                            let content = RoomMessageEventContent::text_plain(text.clone());
-                            room_handle.send(content).await
-                        } else {
-                            // Try download -> reupload -> send for common media types
-                            match &ev.content.msgtype {
-                                MessageType::Image(img) => {
-                                    if opts.reupload_media {
-                                        match reupload_image(&client, img).await {
-                                            Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
-                                            Err(e) => { warn!(error = %e, "Image reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
-                                        }
-                                    } else { room_handle.send(ev.content.clone()).await }
-                                }
-                                MessageType::File(file) => {
-                                    if opts.reupload_media {
-                                        match reupload_file(&client, file).await {
-                                            Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
-                                            Err(e) => { warn!(error = %e, "File reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
-                                        }
-                                    } else { room_handle.send(ev.content.clone()).await }
-                                }
-                                MessageType::Audio(audio) => {
-                                    if opts.reupload_media {
-                                        match reupload_audio(&client, audio).await {
-                                            Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
-                                            Err(e) => { warn!(error = %e, "Audio reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
-                                        }
-                                    } else { room_handle.send(ev.content.clone()).await }
-                                }
-                                MessageType::Video(video) => {
-                                    if opts.reupload_media {
-                                        match reupload_video(&client, video).await {
-                                            Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
-                                            Err(e) => { warn!(error = %e, "Video reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
-                                        }
-                                    } else { room_handle.send(ev.content.clone()).await }
-                                }
-                                MessageType::Emote(_) | MessageType::Location(_) | MessageType::Notice(_) | MessageType::ServerNotice(_) | MessageType::Text(_) | MessageType::VerificationRequest(_) | _ => room_handle.send(ev.content.clone()).await,
-                            }
-                        };
-                        match send_res {
-                            Ok(_) => {
-                                info!(from = %source_id, to = %target_id, sender = %ev.sender, "Relayed message");
-                                if formatted_text.is_none() && opts.caption_media {
-                                    let kind = match &ev.content.msgtype {
-                                        MessageType::Image(_) => "image", MessageType::File(_) => "file", MessageType::Audio(_) => "audio", MessageType::Video(_) => "video", MessageType::Emote(_) | MessageType::Location(_) | MessageType::Notice(_) | MessageType::ServerNotice(_) | MessageType::Text(_) | MessageType::VerificationRequest(_) | _ => ""
-                                    };
-                                    if !kind.is_empty() {
-                                    let caption = format!("{display_name_bold}: sent a {kind}");
-                                        let _ = room_handle.send(RoomMessageEventContent::text_plain(caption)).await;
-                                    }
-                                }
-                            }
-                            Err(e) => warn!(error = %e, from = %source_id, to = %target_id, "Failed to relay message"),
-                        }
+        // Plain text/notice messages; parse command if the body starts with '!'
+        let body_opt = match &ev.content.msgtype {
+            MessageType::Text(t) => Some(t.body.as_str()),
+            MessageType::Notice(n) => Some(n.body.as_str()),
+            MessageType::Audio(_) | MessageType::Emote(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => None,
+        };
+        if let Some(body) = body_opt.map(str::trim)
+            && body.starts_with('!') {
+                let mut parts = body.splitn(2, ' ');
+                let cmd = parts.next().unwrap_or("");
+                let args_raw = parts.next().unwrap_or("").trim();
+                if let Some(handler) = commands.get(cmd) {
+                    let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
+                    // Enforce env selection via -d flag:
+                    // - prod (dev_active=false) only handles commands WITHOUT -d
+                    // - dev  (dev_active=true)  only handles commands WITH -d
+                    if arg_dev_flag != dev_active {
+                        info!(command = %cmd, dev_flag = arg_dev_flag, dev_active = dev_active, "Ignoring command due to env mismatch");
+                    } else if handler.dev_only() && !dev_active {
+                        info!(command = %cmd, "Ignoring dev-only command in prod mode");
                     } else {
-                        warn!(from = %source_id, to = %target_id, "No handle for target room; skipping relay");
+                        let ctx = crate::commands::CommandContext {
+                            client: client.clone(),
+                            room: room.clone(),
+                            commands: Arc::clone(&commands),
+                            dev_active,
+                        };
+                        if let Err(e) = handler.run(&ctx, &args_clean).await {
+                            warn!(error = %e, command = %cmd, "Command failed");
+                        }
                     }
                 }
-                } else {
-                    info!(room_id = %source_id, "No relay mapping for this room; not forwarding");
+            }
+
+        // Relay to rooms in the same cluster.
+        // - For text/notice/emote: send as plain text "DisplayName: message".
+        // - For other types: forward original content unchanged.
+        if dev_active {
+            info!(room_id = %room.room_id(), "Dev mode active: relay disabled");
+        } else {
+            let source_id = room.room_id().to_owned();
+            if let Some(targets) = relay.map.get(&source_id).cloned() {
+            let opts = relay.opts.get(&source_id).copied().unwrap_or(RelayOptions { reupload_media: true, caption_media: true });
+            // Resolve sender display name in the source room
+            let display_name = match room.get_member(&ev.sender).await {
+                Ok(Some(m)) => m
+                    .display_name().unwrap_or_else(|| ev.sender.localpart()).to_owned(),
+                _ => ev.sender.localpart().to_owned(),
+            };
+            let display_name_bold = to_bold(&display_name);
+
+            let mut formatted_text: Option<String> = None;
+            match &ev.content.msgtype {
+                MessageType::Text(t) => {
+                    let (quoted, main) = split_reply_fallback(&t.body);
+                    let mut out = String::new();
+                    if let Some(q) = quoted {
+                        writeln!(out, "↪ {}", truncate(&q, 300)).unwrap();
+                    }
+                    write!(out, "{}: {}", display_name_bold, main.trim()).unwrap();
+                    formatted_text = Some(out);
                 }
+                MessageType::Notice(n) => {
+                    let (quoted, main) = split_reply_fallback(&n.body);
+                    let mut out = String::new();
+                    if let Some(q) = quoted {
+                        writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
+                    }
+                    write!(out,"{}: {}", display_name_bold, main.trim()).unwrap();
+                    formatted_text = Some(out);
+                }
+                MessageType::Emote(e) => {
+                    let (quoted, main) = split_reply_fallback(&e.body);
+                    let mut out = String::new();
+                    if let Some(q) = quoted {
+                        writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
+                    }
+                    write!(out,"{}: * {}", display_name_bold, main.trim()).unwrap();
+                    formatted_text = Some(out);
+                }
+                MessageType::Audio(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => {}
+            }
+
+            for target_id in targets {
+                if target_id == source_id { continue; }
+                if let Some(room_handle) = client.get_room(&target_id) {
+                    let send_res = if let Some(text) = &formatted_text {
+                        let content = RoomMessageEventContent::text_plain(text.clone());
+                        room_handle.send(content).await
+                    } else {
+                        // Try download -> reupload -> send for common media types
+                        match &ev.content.msgtype {
+                            MessageType::Image(img) => {
+                                if opts.reupload_media {
+                                    match reupload_image(&client, img).await {
+                                        Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
+                                        Err(e) => { warn!(error = %e, "Image reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
+                                    }
+                                } else { room_handle.send(ev.content.clone()).await }
+                            }
+                            MessageType::File(file) => {
+                                if opts.reupload_media {
+                                    match reupload_file(&client, file).await {
+                                        Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
+                                        Err(e) => { warn!(error = %e, "File reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
+                                    }
+                                } else { room_handle.send(ev.content.clone()).await }
+                            }
+                            MessageType::Audio(audio) => {
+                                if opts.reupload_media {
+                                    match reupload_audio(&client, audio).await {
+                                        Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
+                                        Err(e) => { warn!(error = %e, "Audio reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
+                                    }
+                                } else { room_handle.send(ev.content.clone()).await }
+                            }
+                            MessageType::Video(video) => {
+                                if opts.reupload_media {
+                                    match reupload_video(&client, video).await {
+                                        Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
+                                        Err(e) => { warn!(error = %e, "Video reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
+                                    }
+                                } else { room_handle.send(ev.content.clone()).await }
+                            }
+                            MessageType::Emote(_) | MessageType::Location(_) | MessageType::Notice(_) | MessageType::ServerNotice(_) | MessageType::Text(_) | MessageType::VerificationRequest(_) | _ => room_handle.send(ev.content.clone()).await,
+                        }
+                    };
+                    match send_res {
+                        Ok(_) => {
+                            info!(from = %source_id, to = %target_id, sender = %ev.sender, "Relayed message");
+                            if formatted_text.is_none() && opts.caption_media {
+                                let kind = match &ev.content.msgtype {
+                                    MessageType::Image(_) => "image", MessageType::File(_) => "file", MessageType::Audio(_) => "audio", MessageType::Video(_) => "video", MessageType::Emote(_) | MessageType::Location(_) | MessageType::Notice(_) | MessageType::ServerNotice(_) | MessageType::Text(_) | MessageType::VerificationRequest(_) | _ => ""
+                                };
+                                if !kind.is_empty() {
+                                let caption = format!("{display_name_bold}: sent a {kind}");
+                                    let _ = room_handle.send(RoomMessageEventContent::text_plain(caption)).await;
+                                }
+                            }
+                        }
+                        Err(e) => warn!(error = %e, from = %source_id, to = %target_id, "Failed to relay message"),
+                    }
+                } else {
+                    warn!(from = %source_id, to = %target_id, "No handle for target room; skipping relay");
+                }
+            }
+            } else {
+                info!(room_id = %source_id, "No relay mapping for this room; not forwarding");
             }
         }
     });
@@ -444,42 +438,38 @@ async fn main() -> Result<()> {
     // Emoji SAS verification handlers (print emojis to console). If auto_verify is true,
     // we will auto-confirm once emojis are shown.
     let auto_confirm = args.auto_verify;
-    client.add_event_handler(move |ev: ToDeviceKeyVerificationRequestEvent, client: Client| {
-        let client2 = client.clone();
-        async move {
+    client.add_event_handler(async move |ev: ToDeviceKeyVerificationRequestEvent, client: Client| {
             info!(user = %ev.sender, flow = %ev.content.transaction_id, "Received verification request");
             if let Some(req) = client.encryption().get_verification_request(&ev.sender, &ev.content.transaction_id).await {
-                tokio::spawn(handle_verification_request(client2, req, auto_confirm));
+                tokio::spawn(handle_verification_request(req, auto_confirm));
             } else {
                 warn!(user = %ev.sender, flow = %ev.content.transaction_id, "No verification request found");
             }
-        }
     });
 
-    client.add_event_handler(move |ev: OriginalSyncRoomMessageEvent, client: Client| {
-        let client2 = client.clone();
-        async move {
-            if let MessageType::VerificationRequest(_) = &ev.content.msgtype {
-                info!(user = %ev.sender, event = %ev.event_id, "Received in-room verification request");
-                if let Some(req) = client.encryption().get_verification_request(&ev.sender, &ev.event_id).await {
-                    tokio::spawn(handle_verification_request(client2, req, auto_confirm));
-                }
-            }
-        }
-    });
-
-    client.add_event_handler(move |ev: ToDeviceKeyVerificationStartEvent, client: Client| {
-        let client2 = client.clone();
-        async move {
-            info!(user = %ev.sender, flow = %ev.content.transaction_id, "Received verification start");
-            if let Some(Verification::SasV1(sas)) = client
+    client.add_event_handler(async move |ev: OriginalSyncRoomMessageEvent, client: Client| {
+        if let MessageType::VerificationRequest(_) = &ev.content.msgtype {
+            info!(user = %ev.sender, event = %ev.event_id, "Received in-room verification request");
+            if let Some(req) = client
                 .encryption()
-                .get_verification(&ev.sender, ev.content.transaction_id.as_str())
+                .get_verification_request(&ev.sender, &ev.event_id)
                 .await
             {
-                tokio::spawn(handle_sas(client2, sas, auto_confirm));
+                tokio::spawn(handle_verification_request(req, auto_confirm));
             }
         }
+    });
+
+    client.add_event_handler(async move |ev: ToDeviceKeyVerificationStartEvent, client: Client| {
+        info!(user = %ev.sender, flow = %ev.content.transaction_id, "Received verification start");
+        if let Some(Verification::SasV1(sas)) = client
+            .encryption()
+            .get_verification(&ev.sender, ev.content.transaction_id.as_str())
+            .await
+        {
+            tokio::spawn(handle_sas(sas, auto_confirm));
+        }
+
     });
     // End emoji SAS handlers
 
@@ -562,7 +552,9 @@ async fn resolve_relay_map(client: &Client, cfg: &BotConfig) -> Result<RelayPlan
             if room_ref.starts_with('#') {
                 match RoomAliasId::parse(room_ref) {
                     Ok(alias) => match client.resolve_room_alias(&alias).await {
-                        Ok(resp) => resolved.push(resp.room_id.clone()),
+                        Ok(resp) => {
+                            resolved.push(resp.room_id.clone());
+                        }
                         Err(e) => {
                             warn!(alias = %room_ref, error = %e, "Failed to resolve room alias; skipping");
                         }
@@ -622,11 +614,7 @@ async fn resolve_relay_map(client: &Client, cfg: &BotConfig) -> Result<RelayPlan
     Ok(RelayPlan { map, opts })
 }
 
-async fn handle_verification_request(
-    client: Client,
-    request: VerificationRequest,
-    auto_confirm: bool,
-) {
+async fn handle_verification_request(request: VerificationRequest, auto_confirm: bool) {
     info!(user = %request.other_user_id(), "Accepting verification request");
     if let Err(e) = request.accept().await {
         warn!(error = %e, "Failed to accept verification request");
@@ -637,7 +625,7 @@ async fn handle_verification_request(
         match state {
             VerificationRequestState::Transitioned { verification } => {
                 if let Some(sas) = verification.sas() {
-                    tokio::spawn(handle_sas(client.clone(), sas, auto_confirm));
+                    tokio::spawn(handle_sas(sas, auto_confirm));
                 }
                 break;
             }
@@ -656,7 +644,7 @@ async fn handle_verification_request(
     }
 }
 
-async fn handle_sas(_client: Client, sas: SasVerification, auto_confirm: bool) {
+async fn handle_sas(sas: SasVerification, auto_confirm: bool) {
     info!(user = %sas.other_device().user_id(), device = %sas.other_device().device_id(), "Starting SAS verification");
     if let Err(e) = sas.accept().await {
         warn!(error = %e, "Failed to accept SAS");
