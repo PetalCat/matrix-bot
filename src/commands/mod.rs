@@ -66,11 +66,11 @@ impl Command for DiagCommand {
         let user_id = ctx
             .client
             .user_id()
-            .map_or_else(|| "<unknown>".into(), ToString::to_string);
+            .map_or("<unknown>".to_owned(), ToString::to_string);
         let device_id = ctx
             .client
             .device_id()
-            .map_or_else(|| "<unknown>".into(), ToString::to_string);
+            .map_or("<unknown>".to_owned(), ToString::to_string);
 
         let is_encrypted = match ctx.room.latest_encryption_state().await {
             Ok(b) => b.is_encrypted(),

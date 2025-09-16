@@ -1,9 +1,7 @@
 mod commands;
 
 use core::{fmt::Write as _, time::Duration};
-use std::{
-    borrow::ToOwned, collections::HashMap, fs, io::IsTerminal as _, path::PathBuf, sync::Arc,
-};
+use std::{collections::HashMap, fs, io::IsTerminal as _, path::PathBuf, sync::Arc};
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
@@ -342,7 +340,7 @@ async fn main() -> Result<()> {
                 // Resolve sender display name in the source room
                 let display_name = match room.get_member(&ev.sender).await {
                     Ok(Some(m)) => m
-                        .display_name().map_or_else(|| ev.sender.localpart().to_owned(), ToOwned::to_owned),
+                        .display_name().unwrap_or_else(|| ev.sender.localpart()).to_owned(),
                     _ => ev.sender.localpart().to_owned(),
                 };
                 let display_name_bold = to_bold(&display_name);
