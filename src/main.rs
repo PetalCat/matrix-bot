@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use futures_util::StreamExt;
 // media helpers used via client.media()
@@ -11,10 +11,10 @@ use matrix_sdk::encryption::verification::{
 };
 use matrix_sdk::room::Room;
 use matrix_sdk::{
+    Client, SessionMeta,
     config::SyncSettings,
     matrix_auth::{MatrixSession, MatrixSessionTokens},
     ruma::{self, events::room::member::MembershipState},
-    Client, SessionMeta,
 };
 use mime::Mime;
 use ruma::events::key::verification::{
@@ -135,12 +135,12 @@ async fn main() -> Result<()> {
     // First, try standard upward search from CWD. If none found, also try
     // the common repo layout path "matrix-ping-bot/.env" relative to CWD.
     let loaded_default = dotenvy::dotenv().ok();
-    if loaded_default.is_none() {
-        if let Ok(cwd) = std::env::current_dir() {
-            let alt = cwd.join("matrix-ping-bot/.env");
-            if alt.exists() {
-                let _ = dotenvy::from_path(&alt);
-            }
+    if loaded_default.is_none()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        let alt = cwd.join("matrix-ping-bot/.env");
+        if alt.exists() {
+            let _ = dotenvy::from_path(&alt);
         }
     }
     let args = Args::parse();
@@ -292,8 +292,8 @@ async fn main() -> Result<()> {
                 MessageType::Notice(n) => Some(n.body.as_str()),
                 _ => None,
             };
-            if let Some(body) = body_opt.map(|b| b.trim()) {
-                if body.starts_with('!') {
+            if let Some(body) = body_opt.map(|b| b.trim())
+                && body.starts_with('!') {
                     let mut parts = body.splitn(2, ' ');
                     let cmd = parts.next().unwrap_or("");
                     let args_raw = parts.next().unwrap_or("").trim();
@@ -319,7 +319,6 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-            }
 
             // Relay to rooms in the same cluster.
             // - For text/notice/emote: send as plain text "DisplayName: message".
@@ -676,10 +675,8 @@ async fn handle_sas(_client: Client, sas: SasVerification, auto_confirm: bool) {
                     .collect::<Vec<_>>()
                     .join(" ");
                 println!("SAS emojis: {emoji_string}\nSAS names:  {descriptions}");
-                if auto_confirm {
-                    if let Err(e) = sas.confirm().await {
-                        warn!(error = %e, "Failed to confirm SAS");
-                    }
+                if auto_confirm && let Err(e) = sas.confirm().await {
+                    warn!(error = %e, "Failed to confirm SAS");
                 }
             }
             SasState::KeysExchanged { emojis: None, .. } => {
