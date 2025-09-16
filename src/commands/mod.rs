@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{string::ToString, sync::Arc};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -63,14 +63,14 @@ impl Command for DiagCommand {
     }
 
     async fn run(&self, ctx: &CommandContext, _args: &str) -> Result<()> {
-        let user_id = match ctx.client.user_id() {
-            Some(u) => u.to_string(),
-            None => "<unknown>".into(),
-        };
+        let user_id = ctx
+            .client
+            .user_id()
+            .map_or_else(|| "<unknown>".into(), ToString::to_string);
         let device_id = ctx
             .client
             .device_id()
-            .map_or_else(|| "<unknown>".into(), std::string::ToString::to_string);
+            .map_or_else(|| "<unknown>".into(), ToString::to_string);
 
         let is_encrypted = match ctx.room.latest_encryption_state().await {
             Ok(b) => b.is_encrypted(),
@@ -130,10 +130,10 @@ impl Command for HelpCommand {
             .commands
             .values()
             .filter(|cmd| !cmd.dev_only() || ctx.dev_active)
-            .map(|cmd| (cmd.name().to_string(), cmd.help().to_string()))
+            .map(|cmd| (cmd.name().to_owned(), cmd.help().to_owned()))
             .collect();
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut lines = vec!["Available commands:".to_string()];
+        let mut lines = vec!["Available commands:".to_owned()];
         for (name, help) in pairs {
             lines.push(format!("{name} — {help}"));
         }
@@ -170,7 +170,7 @@ fn decorate_dev(text: &str, dev_active: bool) -> String {
     if dev_active {
         format!("=======DEV MODE=======\n{text}")
     } else {
-        text.to_string()
+        text.to_owned()
     }
 }
 

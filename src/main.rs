@@ -1,10 +1,11 @@
-#![warn(clippy::pedantic)]
 mod commands;
 
-use std::fmt::Write as _;
-use std::{collections::HashMap, fs, io::IsTerminal, path::PathBuf, sync::Arc};
+use core::{fmt::Write as _, time::Duration};
+use std::{
+    borrow::ToOwned, collections::HashMap, fs, io::IsTerminal as _, path::PathBuf, sync::Arc,
+};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
 use futures_util::StreamExt as _;
 use matrix_sdk::{
@@ -139,7 +140,6 @@ struct RelayPlan {
 }
 
 #[tokio::main]
-#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     init_tracing();
     // Load .env if present so clap can pick up env vars.
@@ -151,7 +151,7 @@ async fn main() -> Result<()> {
     {
         let alt = cwd.join("matrix-ping-bot/.env");
         if alt.exists() {
-            let _ = dotenvy::from_path(&alt);
+            dotenvy::from_path(&alt).unwrap();
         }
     }
     let args = Args::parse();
@@ -264,13 +264,13 @@ async fn main() -> Result<()> {
 
     // Message handler: relay between configured room clusters, and keep existing commands
     let client_for_handler = client.clone();
-    let relay_handler = relay.clone();
-    let commands_handler = commands.clone();
+    let relay_handler = Arc::clone(&relay);
+    let commands_handler = Arc::clone(&commands);
     let dev_active_handler = dev_active;
     client.add_event_handler(move |ev: OriginalSyncRoomMessageEvent, room: Room| {
         let client = client_for_handler.clone();
-        let relay = relay_handler.clone();
-        let commands = commands_handler.clone();
+        let relay = Arc::clone(&relay_handler);
+        let commands = Arc::clone(&commands_handler);
         let dev_active = dev_active_handler;
         async move {
             // Ignore own messages
@@ -286,13 +286,13 @@ async fn main() -> Result<()> {
                 MessageType::File(_) => "file",
                 MessageType::Audio(_) => "audio",
                 MessageType::Video(_) => "video",
-                _ => "other",
+                MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::VerificationRequest(_) | _ => "other",
             };
             let body_snippet: Option<String> = match &ev.content.msgtype {
                 MessageType::Text(t) => Some(truncate(&t.body, 200)),
                 MessageType::Notice(n) => Some(truncate(&n.body, 200)),
                 MessageType::Emote(e) => Some(truncate(&e.body, 200)),
-                _ => None,
+                MessageType::Audio(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => None,
             };
             info!(room_id = %room.room_id(), sender = %ev.sender, kind = %msg_kind, body = ?body_snippet, "Incoming message");
 
@@ -300,7 +300,7 @@ async fn main() -> Result<()> {
             let body_opt = match &ev.content.msgtype {
                 MessageType::Text(t) => Some(t.body.as_str()),
                 MessageType::Notice(n) => Some(n.body.as_str()),
-                _ => None,
+                MessageType::Audio(_) | MessageType::Emote(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => None,
             };
             if let Some(body) = body_opt.map(str::trim)
                 && body.starts_with('!') {
@@ -320,7 +320,7 @@ async fn main() -> Result<()> {
                             let ctx = crate::commands::CommandContext {
                                 client: client.clone(),
                                 room: room.clone(),
-                                commands: commands.clone(),
+                                commands: Arc::clone(&commands),
                                 dev_active,
                             };
                             if let Err(e) = handler.run(&ctx, &args_clean).await {
@@ -342,8 +342,8 @@ async fn main() -> Result<()> {
                 // Resolve sender display name in the source room
                 let display_name = match room.get_member(&ev.sender).await {
                     Ok(Some(m)) => m
-                        .display_name().map_or_else(|| ev.sender.localpart().to_string(), std::borrow::ToOwned::to_owned),
-                    _ => ev.sender.localpart().to_string(),
+                        .display_name().map_or_else(|| ev.sender.localpart().to_owned(), ToOwned::to_owned),
+                    _ => ev.sender.localpart().to_owned(),
                 };
                 let display_name_bold = to_bold(&display_name);
 
@@ -376,7 +376,7 @@ async fn main() -> Result<()> {
                         write!(out,"{}: * {}", display_name_bold, main.trim()).unwrap();
                         formatted_text = Some(out);
                     }
-                    _ => {}
+                    MessageType::Audio(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => {}
                 }
 
                 for target_id in targets {
@@ -420,14 +420,16 @@ async fn main() -> Result<()> {
                                         }
                                     } else { room_handle.send(ev.content.clone()).await }
                                 }
-                                _ => room_handle.send(ev.content.clone()).await,
+                                MessageType::Emote(_) | MessageType::Location(_) | MessageType::Notice(_) | MessageType::ServerNotice(_) | MessageType::Text(_) | MessageType::VerificationRequest(_) | _ => room_handle.send(ev.content.clone()).await,
                             }
                         };
                         match send_res {
                             Ok(_) => {
                                 info!(from = %source_id, to = %target_id, sender = %ev.sender, "Relayed message");
                                 if formatted_text.is_none() && opts.caption_media {
-                                    let kind = match &ev.content.msgtype { MessageType::Image(_) => "image", MessageType::File(_) => "file", MessageType::Audio(_) => "audio", MessageType::Video(_) => "video", _ => "" };
+                                    let kind = match &ev.content.msgtype {
+                                        MessageType::Image(_) => "image", MessageType::File(_) => "file", MessageType::Audio(_) => "audio", MessageType::Video(_) => "video", MessageType::Emote(_) | MessageType::Location(_) | MessageType::Notice(_) | MessageType::ServerNotice(_) | MessageType::Text(_) | MessageType::VerificationRequest(_) | _ => ""
+                                    };
                                     if !kind.is_empty() {
                                     let caption = format!("{display_name_bold}: sent a {kind}");
                                         let _ = room_handle.send(RoomMessageEventContent::text_plain(caption)).await;
@@ -494,8 +496,7 @@ async fn main() -> Result<()> {
         timeout_ms = args.sync_timeout_ms,
         "Starting sync… Press Ctrl+C to stop."
     );
-    let settings =
-        SyncSettings::new().timeout(std::time::Duration::from_millis(args.sync_timeout_ms));
+    let settings = SyncSettings::new().timeout(Duration::from_millis(args.sync_timeout_ms));
     client
         .sync(settings)
         .await
@@ -656,7 +657,9 @@ async fn handle_verification_request(
                 info!("Verification already done at request stage");
                 break;
             }
-            _ => {}
+            VerificationRequestState::Created { .. }
+            | VerificationRequestState::Requested { .. }
+            | VerificationRequestState::Ready { .. } => {}
         }
     }
 }
@@ -699,7 +702,11 @@ async fn handle_sas(_client: Client, sas: SasVerification, auto_confirm: bool) {
                 warn!(reason = %info.reason(), "Verification cancelled (SAS stage)");
                 break;
             }
-            _ => {}
+            SasState::Created { .. }
+            | SasState::Started { .. }
+            | SasState::Accepted { .. }
+            | SasState::KeysExchanged { .. }
+            | SasState::Confirmed => {}
         }
     }
 }
@@ -753,23 +760,23 @@ fn split_reply_fallback(body: &str) -> (Option<String>, String) {
         let main = rest
             .trim_start_matches('\n')
             .trim_start_matches('\n')
-            .to_string();
+            .to_owned();
         // Collect quoted lines without leading "> "
         let mut quoted_lines = Vec::new();
         for line in quoted_block.lines() {
             if let Some(stripped) = line.strip_prefix("> ") {
-                quoted_lines.push(stripped.to_string());
+                quoted_lines.push(stripped.to_owned());
             } else if line.starts_with('>') {
                 let s = line.trim_start_matches('>').trim_start();
-                quoted_lines.push(s.to_string());
+                quoted_lines.push(s.to_owned());
             }
         }
         if !quoted_lines.is_empty() {
             let quoted = quoted_lines.join(" ");
-            return (Some(quoted.trim().to_string()), main);
+            return (Some(quoted.trim().to_owned()), main);
         }
     }
-    (None, body.to_string())
+    (None, body.to_owned())
 }
 
 fn parse_mime(opt: Option<&str>) -> Mime {

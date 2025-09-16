@@ -24,3 +24,15 @@ url = "2"
 
 [features]
 default = ["rpassword"]
+
+[lints.clippy]
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+clone_on_ref_ptr = "warn"
+std_instead_of_core = "warn"
+str_to_string = "warn"
+unused_trait_names = "warn"
+wildcard_enum_match_arm = "warn"
+
+too_many_lines = "allow"
