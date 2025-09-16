@@ -21,7 +21,6 @@ pub trait Command: Send + Sync {
 pub struct CommandContext {
     pub client: Client,
     pub room: Room,
-    pub sender: String,
     pub commands: Arc<CommandMap>,
     pub dev_active: bool,
 }

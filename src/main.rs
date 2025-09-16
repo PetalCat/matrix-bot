@@ -310,7 +310,6 @@ async fn main() -> Result<()> {
                             let ctx = crate::commands::CommandContext {
                                 client: client.clone(),
                                 room: room.clone(),
-                                sender: ev.sender.to_string(),
                                 commands: commands.clone(),
                                 dev_active,
                             };
@@ -466,10 +465,12 @@ async fn main() -> Result<()> {
         let client2 = client.clone();
         async move {
             info!(user = %ev.sender, flow = %ev.content.transaction_id, "Received verification start");
-            if let Some(verification) = client.encryption().get_verification(&ev.sender, ev.content.transaction_id.as_str()).await {
-                if let Verification::SasV1(sas) = verification {
-                    tokio::spawn(handle_sas(client2, sas, auto_confirm));
-                }
+            if let Some(Verification::SasV1(sas)) = client
+                .encryption()
+                .get_verification(&ev.sender, ev.content.transaction_id.as_str())
+                .await
+            {
+                tokio::spawn(handle_sas(client2, sas, auto_confirm));
             }
         }
     });
@@ -659,27 +660,30 @@ async fn handle_sas(_client: Client, sas: SasVerification, auto_confirm: bool) {
     let mut stream = sas.changes();
     while let Some(state) = stream.next().await {
         match state.clone() {
-            SasState::KeysExchanged { emojis, .. } => {
-                if let Some(e) = emojis {
-                    let emoji_string = e
-                        .emojis
-                        .iter()
-                        .map(|em| em.symbol)
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let descriptions = e
-                        .emojis
-                        .iter()
-                        .map(|em| em.description)
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    println!("SAS emojis: {emoji_string}\nSAS names:  {descriptions}");
-                    if auto_confirm {
-                        if let Err(e) = sas.confirm().await {
-                            warn!(error = %e, "Failed to confirm SAS");
-                        }
+            SasState::KeysExchanged {
+                emojis: Some(e), ..
+            } => {
+                let emoji_string = e
+                    .emojis
+                    .iter()
+                    .map(|em| em.symbol)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let descriptions = e
+                    .emojis
+                    .iter()
+                    .map(|em| em.description)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!("SAS emojis: {emoji_string}\nSAS names:  {descriptions}");
+                if auto_confirm {
+                    if let Err(e) = sas.confirm().await {
+                        warn!(error = %e, "Failed to confirm SAS");
                     }
                 }
+            }
+            SasState::KeysExchanged { emojis: None, .. } => {
+                // No emojis available yet; do nothing.
             }
             SasState::Done { .. } => {
                 info!("Verification completed");
