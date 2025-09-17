@@ -1,4 +1,3 @@
-mod commands;
 mod tools;
 
 use core::{fmt::Write as _, time::Duration};
@@ -238,7 +237,13 @@ async fn main() -> Result<()> {
     // Loud banner so mode is obvious at startup
     print_mode_banner(dev_active);
     // Build tools registry
-    let ai_handle_env = std::env::var("AI_HANDLE").ok().map(|raw| if raw.starts_with('@'){raw}else{format!("@{}", raw)});
+    let ai_handle_env = std::env::var("AI_HANDLE").ok().map(|raw| {
+        if raw.starts_with('@') {
+            raw
+        } else {
+            format!("@{raw}")
+        }
+    });
     let registry = Arc::new(tools::build_registry(config.tools.clone(), ai_handle_env));
 
     // Auto-join handler for invites
@@ -300,42 +305,41 @@ async fn main() -> Result<()> {
                 let mut parts = body.splitn(2, ' ');
                 let cmd = parts.next().unwrap_or("");
                 let args_raw = parts.next().unwrap_or("").trim();
-                if let Some(id) = registry_for_handler.by_command.get(cmd) {
-                    if let Some(entry) = registry_for_handler.by_id.get(id) {
-                        let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
-                        if arg_dev_flag != dev_active {
-                            info!(tool = %id, "Ignoring command due to env mismatch");
-                        } else if entry.spec.dev_only.unwrap_or(entry.tool.dev_only()) && !dev_active {
-                            info!(tool = %id, "Ignoring dev-only tool in prod mode");
-                        } else if !registry_for_handler.is_enabled(id) {
-                            info!(tool = %id, "Tool disabled");
-                        } else {
-                            let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler) };
-                            if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
-                                warn!(error = %e, tool = %id, "Tool failed");
-                            }
+                if let Some(id) = registry_for_handler.by_command.get(cmd)
+                    && let Some(entry) = registry_for_handler.by_id.get(id)
+                {
+                    let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
+                    if arg_dev_flag != dev_active {
+                        info!(tool = %id, "Ignoring command due to env mismatch");
+                    } else if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active {
+                        info!(tool = %id, "Ignoring dev-only tool in prod mode");
+                    } else if !registry_for_handler.is_enabled(id) {
+                        info!(tool = %id, "Tool disabled");
+                    } else {
+                        let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler) };
+                        if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
+                            warn!(error = %e, tool = %id, "Tool failed");
                         }
                     }
                 }
             }
             // @mention
-            if let Some(first) = body.split_whitespace().next() {
-                if let Some(id) = registry_for_handler.by_mention.get(first) {
-                    if let Some(entry) = registry_for_handler.by_id.get(id) {
-                        let args_raw = body[first.len()..].trim();
-                        let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
-                        if arg_dev_flag != dev_active {
-                            info!(tool = %id, "Ignoring mention due to env mismatch");
-                        } else if entry.spec.dev_only.unwrap_or(entry.tool.dev_only()) && !dev_active {
-                            info!(tool = %id, "Ignoring dev-only tool in prod mode");
-                        } else if !registry_for_handler.is_enabled(id) {
-                            info!(tool = %id, "Tool disabled");
-                        } else {
-                            let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler) };
-                            if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
-                                warn!(error = %e, tool = %id, "Tool failed");
-                            }
-                        }
+            if let Some(first) = body.split_whitespace().next()
+                && let Some(id) = registry_for_handler.by_mention.get(first)
+                && let Some(entry) = registry_for_handler.by_id.get(id)
+            {
+                let args_raw = body[first.len()..].trim();
+                let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
+                if arg_dev_flag != dev_active {
+                    info!(tool = %id, "Ignoring mention due to env mismatch");
+                } else if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active {
+                    info!(tool = %id, "Ignoring dev-only tool in prod mode");
+                } else if !registry_for_handler.is_enabled(id) {
+                    info!(tool = %id, "Tool disabled");
+                } else {
+                    let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler) };
+                    if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
+                        warn!(error = %e, tool = %id, "Tool failed");
                     }
                 }
             }
