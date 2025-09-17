@@ -1,4 +1,5 @@
 mod commands;
+mod tools;
 
 use core::{fmt::Write as _, time::Duration};
 use std::{collections::HashMap, fs, io::IsTerminal as _, path::PathBuf, sync::Arc};
@@ -114,6 +115,8 @@ struct BotConfig {
     caption_media: Option<bool>,
     #[serde(default)]
     dev_mode: Option<bool>,
+    #[serde(default)]
+    tools: Option<Vec<tools::ToolSpec>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -234,8 +237,9 @@ async fn main() -> Result<()> {
     let relay = Arc::new(resolve_relay_map(&client, &config).await?);
     // Loud banner so mode is obvious at startup
     print_mode_banner(dev_active);
-    // Build command registry
-    let commands = Arc::new(commands::default_registry());
+    // Build tools registry
+    let ai_handle_env = std::env::var("AI_HANDLE").ok().map(|raw| if raw.starts_with('@'){raw}else{format!("@{}", raw)});
+    let registry = Arc::new(tools::build_registry(config.tools.clone(), ai_handle_env));
 
     // Auto-join handler for invites
     if !args.no_autojoin {
@@ -258,7 +262,8 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Message handler: relay between configured room clusters, and keep existing commands
+    // Message handler: tools + relay
+    let registry_for_handler = Arc::clone(&registry);
     client.add_event_handler(async move |ev: OriginalSyncRoomMessageEvent, room: Room, client: Client| {
         // Ignore own messages
         let Some(own_id) = client.user_id() else { return; };
@@ -283,39 +288,58 @@ async fn main() -> Result<()> {
         };
         info!(room_id = %room.room_id(), sender = %ev.sender, kind = %msg_kind, body = ?body_snippet, "Incoming message");
 
-        // Plain text/notice messages; parse command if the body starts with '!'
+        // Plain text/notice messages; tools by !command or @mention
         let body_opt = match &ev.content.msgtype {
             MessageType::Text(t) => Some(t.body.as_str()),
             MessageType::Notice(n) => Some(n.body.as_str()),
             MessageType::Audio(_) | MessageType::Emote(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => None,
         };
-        if let Some(body) = body_opt.map(str::trim)
-            && body.starts_with('!') {
+        if let Some(body) = body_opt.map(str::trim) {
+            // !command
+            if body.starts_with('!') {
                 let mut parts = body.splitn(2, ' ');
                 let cmd = parts.next().unwrap_or("");
                 let args_raw = parts.next().unwrap_or("").trim();
-                if let Some(handler) = commands.get(cmd) {
-                    let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
-                    // Enforce env selection via -d flag:
-                    // - prod (dev_active=false) only handles commands WITHOUT -d
-                    // - dev  (dev_active=true)  only handles commands WITH -d
-                    if arg_dev_flag != dev_active {
-                        info!(command = %cmd, dev_flag = arg_dev_flag, dev_active = dev_active, "Ignoring command due to env mismatch");
-                    } else if handler.dev_only() && !dev_active {
-                        info!(command = %cmd, "Ignoring dev-only command in prod mode");
-                    } else {
-                        let ctx = crate::commands::CommandContext {
-                            client: client.clone(),
-                            room: room.clone(),
-                            commands: Arc::clone(&commands),
-                            dev_active,
-                        };
-                        if let Err(e) = handler.run(&ctx, &args_clean).await {
-                            warn!(error = %e, command = %cmd, "Command failed");
+                if let Some(id) = registry_for_handler.by_command.get(cmd) {
+                    if let Some(entry) = registry_for_handler.by_id.get(id) {
+                        let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
+                        if arg_dev_flag != dev_active {
+                            info!(tool = %id, "Ignoring command due to env mismatch");
+                        } else if entry.spec.dev_only.unwrap_or(entry.tool.dev_only()) && !dev_active {
+                            info!(tool = %id, "Ignoring dev-only tool in prod mode");
+                        } else if !registry_for_handler.is_enabled(id) {
+                            info!(tool = %id, "Tool disabled");
+                        } else {
+                            let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler) };
+                            if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
+                                warn!(error = %e, tool = %id, "Tool failed");
+                            }
                         }
                     }
                 }
             }
+            // @mention
+            if let Some(first) = body.split_whitespace().next() {
+                if let Some(id) = registry_for_handler.by_mention.get(first) {
+                    if let Some(entry) = registry_for_handler.by_id.get(id) {
+                        let args_raw = body[first.len()..].trim();
+                        let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
+                        if arg_dev_flag != dev_active {
+                            info!(tool = %id, "Ignoring mention due to env mismatch");
+                        } else if entry.spec.dev_only.unwrap_or(entry.tool.dev_only()) && !dev_active {
+                            info!(tool = %id, "Ignoring dev-only tool in prod mode");
+                        } else if !registry_for_handler.is_enabled(id) {
+                            info!(tool = %id, "Tool disabled");
+                        } else {
+                            let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler) };
+                            if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
+                                warn!(error = %e, tool = %id, "Tool failed");
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Relay to rooms in the same cluster.
         // - For text/notice/emote: send as plain text "DisplayName: message".
