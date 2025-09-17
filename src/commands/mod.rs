@@ -3,7 +3,7 @@ use std::{string::ToString, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 use matrix_sdk::{Client, room::Room, ruma::events::room::message::RoomMessageEventContent};
-
+use serde::Deserialize;
 use tracing::warn;
 
 #[async_trait]
@@ -32,6 +32,7 @@ pub fn default_registry() -> CommandMap {
     map.insert("!diag".to_owned(), Arc::new(DiagCommand));
     map.insert("!help".to_owned(), Arc::new(HelpCommand));
     map.insert("!mode".to_owned(), Arc::new(ModeCommand));
+    map.insert("!ai".to_owned(), Arc::new(AiCommand));
     map
 }
 
@@ -166,6 +167,118 @@ impl Command for ModeCommand {
         }
         send_text(ctx, lines.join("\n")).await
     }
+}
+
+pub struct AiCommand;
+
+#[async_trait]
+impl Command for AiCommand {
+    fn name(&self) -> &'static str {
+        "!ai"
+    }
+    fn help(&self) -> &'static str {
+        "Ask the AI: !ai <prompt> (dev only)"
+    }
+    fn dev_only(&self) -> bool {
+        true
+    }
+
+    async fn run(&self, ctx: &CommandContext, args: &str) -> Result<()> {
+        let prompt = args.trim();
+        if prompt.is_empty() {
+            return send_text(ctx, "Usage: !ai <prompt>").await;
+        }
+
+        let api_key = std::env::var("AI_API_KEY")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok());
+        if api_key.is_none() {
+            return send_text(ctx, "AI_API_KEY (or OPENAI_API_KEY) not set").await;
+        }
+        let api_key = api_key.unwrap();
+
+        let api_base =
+            std::env::var("AI_API_BASE").unwrap_or_else(|_| "https://api.openai.com".to_string());
+        let api_path =
+            std::env::var("AI_API_PATH").unwrap_or_else(|_| "/v1/chat/completions".to_string());
+        let model = std::env::var("AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+        let url = format!("{}{}", api_base.trim_end_matches('/'), api_path);
+
+        #[derive(Deserialize)]
+        struct ChoiceMsg {
+            content: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Choice {
+            message: ChoiceMsg,
+        }
+        #[derive(Deserialize)]
+        struct ChatResp {
+            choices: Vec<Choice>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct Msg<'a> {
+            role: &'a str,
+            content: &'a str,
+        }
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            model: &'a str,
+            messages: Vec<Msg<'a>>,
+            max_tokens: Option<u32>,
+        }
+
+        let body = Body {
+            model: &model,
+            messages: vec![Msg {
+                role: "user",
+                content: prompt,
+            }],
+            max_tokens: Some(512),
+        };
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .bearer_auth(&api_key)
+            .json(&body)
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) => {
+                if !r.status().is_success() {
+                    let code = r.status();
+                    let text = r.text().await.unwrap_or_default();
+                    let msg = format!("AI error: {}\n{}", code, truncate_for_ai(&text, 400));
+                    return send_text(ctx, msg).await;
+                }
+                match r.json::<ChatResp>().await {
+                    Ok(parsed) => {
+                        let out = parsed
+                            .choices
+                            .get(0)
+                            .and_then(|c| c.message.content.as_ref())
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "<no content>".to_string());
+                        send_text(ctx, out).await
+                    }
+                    Err(e) => send_text(ctx, format!("Failed to parse AI response: {}", e)).await,
+                }
+            }
+            Err(e) => send_text(ctx, format!("Failed to call AI API: {}", e)).await,
+        }
+    }
+}
+
+fn truncate_for_ai(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for ch in s.chars().take(max) {
+        out.push(ch);
+    }
+    out
 }
 
 fn decorate_dev(text: &str, dev_active: bool) -> String {
