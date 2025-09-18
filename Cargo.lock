@@ -2048,6 +2048,11 @@ dependencies = [
  "futures-util",
  "matrix-sdk",
  "mime",
+ "plugin-ai",
+ "plugin-diagnostics",
+ "plugin-echo",
+ "plugin-mode",
+ "plugin-tools-manager",
  "reqwest",
  "rpassword",
  "serde",
@@ -2056,6 +2061,7 @@ dependencies = [
  "serde_yaml",
  "time",
  "tokio",
+ "tools",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -2658,6 +2664,70 @@ name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
+
+[[package]]
+name = "plugin-ai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "matrix-sdk",
+ "reqwest",
+ "serde",
+ "serde_derive",
+ "serde_yaml",
+ "time",
+ "tools",
+ "tracing",
+]
+
+[[package]]
+name = "plugin-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_derive",
+ "serde_yaml",
+ "tools",
+]
+
+[[package]]
+name = "plugin-echo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_derive",
+ "serde_yaml",
+ "tools",
+]
+
+[[package]]
+name = "plugin-mode"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_derive",
+ "serde_yaml",
+ "tools",
+]
+
+[[package]]
+name = "plugin-tools-manager"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_derive",
+ "serde_yaml",
+ "tools",
+]
 
 [[package]]
 name = "poly1305"
@@ -4123,6 +4193,20 @@ dependencies = [
  "serde_spanned",
  "toml_datetime",
  "winnow",
+]
+
+[[package]]
+name = "tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "matrix-sdk",
+ "serde",
+ "serde_derive",
+ "serde_yaml",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

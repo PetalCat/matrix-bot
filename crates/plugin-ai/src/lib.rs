@@ -24,7 +24,7 @@ use matrix_sdk::{
 };
 use tracing::{info, warn};
 
-use crate::tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text, str_conf, truncate};
+use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text, str_conf, truncate};
 
 pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
     if !specs.iter().any(|t| t.id == "ai") {
@@ -41,6 +41,7 @@ pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
     }
 }
 
+#[must_use]
 pub fn build() -> Arc<dyn Tool> {
     Arc::new(AiTool)
 }
@@ -212,8 +213,8 @@ Note: tokens like -d/--dev are routing flags; ignore them in content—they are 
         }
 
         // Log request metadata (not the full content or secrets)
-        let sys_preview = crate::tools::truncate(&system_prompt, 200);
-        let user_preview = crate::tools::truncate(prompt, 120);
+        let sys_preview = tools::truncate(&system_prompt, 200);
+        let user_preview = tools::truncate(prompt, 120);
         info!(
             model = %model,
             url = %url,
@@ -361,10 +362,17 @@ async fn history_line_from_raw(
         MessageType::Text(inner) => Some(inner.body.as_str()),
         MessageType::Notice(inner) => Some(inner.body.as_str()),
         MessageType::Emote(inner) => Some(inner.body.as_str()),
-        _ => None,
+        MessageType::Audio(_)
+        | MessageType::File(_)
+        | MessageType::Image(_)
+        | MessageType::Location(_)
+        | MessageType::ServerNotice(_)
+        | MessageType::Video(_)
+        | MessageType::VerificationRequest(_)
+        | _ => None,
     }?;
 
-    let sanitized = crate::tools::sanitize_line(body, 400);
+    let sanitized = tools::sanitize_line(body, 400);
     if sanitized.is_empty() {
         return None;
     }
@@ -385,8 +393,7 @@ async fn resolve_display_name(
     let display = match room.get_member(user_id).await {
         Ok(Some(member)) => member
             .display_name()
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| user_id.localpart().to_owned()),
+            .map_or_else(|| user_id.localpart().to_owned(), ToOwned::to_owned),
         _ => user_id.localpart().to_owned(),
     };
     cache.insert(user_id.clone(), display.clone());
@@ -394,10 +401,10 @@ async fn resolve_display_name(
 }
 
 fn format_timestamp(ts: Option<MilliSecondsSinceUnixEpoch>) -> String {
-    if let Some(ts) = ts {
-        if let Some(formatted) = timestamp_to_rfc3339(ts) {
-            return formatted;
-        }
+    if let Some(ts) = ts
+        && let Some(formatted) = timestamp_to_rfc3339(ts)
+    {
+        return formatted;
     }
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
@@ -412,7 +419,7 @@ fn timestamp_to_rfc3339(ts: MilliSecondsSinceUnixEpoch) -> Option<String> {
         .ok()
 }
 
-pub async fn backfill_all(client: Client, history_dir: PathBuf, limit: usize) {
+pub async fn backfill_all(client: Client, history_dir: PathBuf, limit: u64) {
     if limit == 0 {
         info!(dir = %history_dir.display(), "AI backfill skipped because limit is zero");
         return;
@@ -437,7 +444,7 @@ pub async fn backfill_all(client: Client, history_dir: PathBuf, limit: usize) {
             page_counter += 1;
             let batch = remaining.min(50);
             let mut options = MessagesOptions::backward();
-            options.from = from_token.clone();
+            options.from.clone_from(&from_token);
             options.limit = (batch as u32).into();
 
             let response = match room.messages(options).await {

@@ -1,0 +1,20 @@
+[package]
+name = "plugin-ai"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+matrix-sdk.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_derive.workspace = true
+serde_yaml.workspace = true
+time.workspace = true
+tracing.workspace = true
+
+tools = { path = "../tools" }
+
+[lints]
+workspace = true

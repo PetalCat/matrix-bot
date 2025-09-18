@@ -1,4 +1,4 @@
-mod tools;
+mod plugins;
 
 use core::{fmt::Write as _, time::Duration};
 use std::{
@@ -43,6 +43,7 @@ use matrix_sdk::{
 };
 use mime::Mime;
 use serde::{Deserialize, Serialize};
+use tools::{ToolContext, ToolSpec, sanitize_line};
 use tracing::{info, warn};
 
 static AI_BACKFILL_ONCE: Once = Once::new();
@@ -122,7 +123,7 @@ struct BotConfig {
     #[serde(default)]
     dev_mode: Option<bool>,
     #[serde(default)]
-    tools: Option<Vec<tools::ToolSpec>>,
+    tools: Option<Vec<ToolSpec>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -251,7 +252,7 @@ async fn main() -> Result<()> {
             format!("@{raw}")
         }
     });
-    let registry = Arc::new(tools::build_registry(config.tools.clone(), ai_handle_env));
+    let registry = Arc::new(plugins::build_registry(config.tools.clone(), ai_handle_env));
     let history_dir = Arc::new(args.store.join("history"));
     // Log registered tool commands/mentions for visibility
     let mention_keys: Vec<String> = registry.by_mention.keys().cloned().collect();
@@ -289,26 +290,24 @@ async fn main() -> Result<()> {
         // After the first synced event, fire one-time AI history backfill so prev_batch is available
         let client_for_backfill = client.clone();
         let history_dir_for_backfill = Arc::clone(&history_dir_for_handler);
-        let registry_for_backfill = registry_for_handler.clone();
+        let registry_for_backfill = Arc::clone(&registry_for_handler);
         AI_BACKFILL_ONCE.call_once(move || {
-            let (enable, limit) = if let Some(entry) = registry_for_backfill.by_id.get("ai") {
+            let (enable, limit) = registry_for_backfill.by_id.get("ai").map_or((true, 50), |entry| {
                 let cfg = &entry.spec.config;
                 let enable = cfg
                     .get("history_backfill_on_start")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_yaml::Value::as_bool)
                     .unwrap_or(true);
                 let limit = cfg
                     .get("history_backfill_lines")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(50) as usize;
+                    .and_then(serde_yaml::Value::as_u64)
+                    .unwrap_or(50);
                 (enable, limit)
-            } else {
-                (true, 50)
-            };
+            });
             if enable {
                 let history_dir = (*history_dir_for_backfill).clone();
                 tokio::spawn(async move {
-                    crate::tools::ai::backfill_all(client_for_backfill, history_dir, limit).await;
+                    plugin_ai::backfill_all(client_for_backfill, history_dir, limit).await;
                 });
             }
         });
@@ -349,9 +348,9 @@ async fn main() -> Result<()> {
             let ts_str = ts
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_default();
-            let msg = crate::tools::sanitize_line(text_body, 400);
+            let msg = sanitize_line(text_body, 400);
             let line = format!("[{ts_str}] {sender_name}:{msg}");
-            crate::tools::ai::append_history_line(&history_dir_for_handler, &room.room_id().to_owned(), &line);
+            plugin_ai::append_history_line(&history_dir_for_handler, &room.room_id().to_owned(), &line);
         }
 
         // For own messages, stop after recording history; do not trigger tools/relay
@@ -375,7 +374,7 @@ async fn main() -> Result<()> {
                     } else if !registry_for_handler.is_enabled(id) {
                         info!(tool = %id, "Tool disabled");
                     } else {
-                        let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
+                        let ctx = ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
                         if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
                             warn!(error = %e, tool = %id, "Tool failed");
                         }
@@ -414,7 +413,7 @@ async fn main() -> Result<()> {
                         } else if !registry_for_handler.is_enabled(id) {
                             info!(tool = %id, "Tool disabled");
                         } else {
-                            let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
+                            let ctx = ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
                             if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
                                 warn!(error = %e, tool = %id, "Tool failed");
                             }
@@ -441,7 +440,7 @@ async fn main() -> Result<()> {
                             } else if !registry_for_handler.is_enabled("ai") {
                                 info!(tool = %"ai", "Tool disabled");
                             } else {
-                                let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
+                                let ctx = ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
                                 if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
                                     warn!(error = %e, tool = %"ai", "Tool failed");
                                 }
