@@ -13,13 +13,19 @@ pub fn build_registry(
 
     // defaults from each tool module
     let mut specs = config_tools.unwrap_or_default();
-    plugin_mode::register_defaults(&mut specs);
-    plugin_diagnostics::register_defaults(&mut specs);
-    plugin_tools_manager::register_defaults(&mut specs);
-    plugin_ai::register_defaults(&mut specs);
-    plugin_echo::register_defaults(&mut specs);
-    if let Some(h) = env_ai_handle {
-        append_mention(&mut specs, "ai", &h);
+    let plugins: Vec<fn(&mut Vec<ToolSpec>)> = vec![
+        plugin_ping::register_defaults,
+        plugin_mode::register_defaults,
+        plugin_diagnostics::register_defaults,
+        plugin_tools_manager::register_defaults,
+        plugin_ai::register_defaults,
+        plugin_echo::register_defaults,
+    ];
+    for register_defaults in plugins {
+        register_defaults(&mut specs);
+    }
+    if let Some(handle) = env_ai_handle {
+        append_mention(&mut specs, "ai", &handle);
     }
     // If ai has no mention trigger yet, derive one from name (config or AI_NAME) or default to @Claire
     if !specs
@@ -48,6 +54,7 @@ pub fn build_registry(
             "ai" => plugin_ai::build(),
             "tools" => plugin_tools_manager::build(),
             "echo" => plugin_echo::build(),
+            "ping" => plugin_ping::build(),
             _ => {
                 // unknown tool id
                 continue;
