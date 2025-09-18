@@ -43,9 +43,6 @@ pub fn build_registry(
         ai_spec.triggers.mentions.push(format!("@{name}"));
     }
 
-    // tool configs directory (can override via TOOLS_DIR). Default to src/tools next to code.
-    let tools_dir = std::env::var("TOOLS_DIR").unwrap_or_else(|_| "./src/tools".to_owned());
-
     for mut spec in specs {
         let id = spec.id.clone();
         let tool: Arc<dyn Tool> = match id.as_str() {
@@ -60,6 +57,10 @@ pub fn build_registry(
                 continue;
             }
         };
+
+        // tool configs directory (can override via TOOLS_DIR). Default to tools/ in cwd.
+        let tools_dir = std::env::var("TOOLS_DIR").unwrap_or_else(|_| "./tools".to_owned());
+
         // Load per-tool config from tools_dir/<id>/config.yaml and merge.
         if let Some(file_cfg) = load_tool_config(&tools_dir, &id) {
             spec.config = merge_yaml(file_cfg, spec.config); // file takes precedence
@@ -136,7 +137,8 @@ fn append_mention(specs: &mut [ToolSpec], id: &str, mention: &str) {
 }
 
 fn load_tool_config(root: &str, id: &str) -> Option<serde_yaml::Value> {
-    let path = format!("{}/{}/config.yaml", root.trim_end_matches('/'), id);
+    let root = root.trim_end_matches('/');
+    let path = format!("{root}/{id}/config.yaml");
     match std::fs::read_to_string(&path) {
         Ok(s) => match serde_yaml::from_str::<serde_yaml::Value>(&s) {
             Ok(v) => Some(v),
