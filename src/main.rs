@@ -212,7 +212,17 @@ async fn main() -> Result<()> {
                 ));
             }
             warn!("No password provided via --password or MATRIX_PASSWORD. Prompting...");
-            rpassword::prompt_password("Matrix password: ")?
+            #[cfg(feature = "rpassword")]
+            {
+                rpassword::prompt_password("Matrix password:")
+                    .map_err(|e| anyhow!("Failed to read password: {e}"))?
+            }
+            #[cfg(not(feature = "rpassword"))]
+            {
+                return Err(anyhow!(
+                    "rpassword feature is not enabled. Cannot prompt for password."
+                ));
+            }
         };
 
         info!("Logging in as {}", args.username);
