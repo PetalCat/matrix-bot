@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::Mutex;
 use tools::{Tool, ToolEntry, ToolSpec, ToolsRegistry, plugin_trait::Plugin};
+use tracing::warn;
 
 pub fn build_registry(
     config_tools: Option<Vec<ToolSpec>>,
@@ -13,15 +14,21 @@ pub fn build_registry(
 
     // defaults from each tool module
     let mut specs = config_tools.unwrap_or_default();
-    let plugins: Vec<Box<dyn Plugin>> = vec![
-        Box::new(plugin_ping::PingPlugin),
-        Box::new(plugin_mode::ModePlugin),
-        Box::new(plugin_diagnostics::DiagnosticsPlugin),
-        Box::new(plugin_tools_manager::ToolsManagerPlugin),
-        Box::new(plugin_ai::AiPlugin),
-        Box::new(plugin_echo::EchoPlugin),
-    ];
-    for plugin in plugins {
+    let plugins: HashMap<&'static str, Box<dyn Plugin>> = HashMap::from([
+        ("ping", Box::new(plugin_ping::PingPlugin) as Box<dyn Plugin>),
+        ("mode", Box::new(plugin_mode::ModePlugin) as Box<dyn Plugin>),
+        (
+            "diag",
+            Box::new(plugin_diagnostics::DiagnosticsPlugin) as Box<dyn Plugin>,
+        ),
+        (
+            "tools",
+            Box::new(plugin_tools_manager::ToolsManagerPlugin) as Box<dyn Plugin>,
+        ),
+        ("ai", Box::new(plugin_ai::AiPlugin) as Box<dyn Plugin>),
+        ("echo", Box::new(plugin_echo::EchoPlugin) as Box<dyn Plugin>),
+    ]);
+    for plugin in plugins.values() {
         plugin.register_defaults(&mut specs);
     }
     if let Some(handle) = env_ai_handle {
@@ -44,40 +51,35 @@ pub fn build_registry(
     }
 
     for mut spec in specs {
-        let id = spec.id.clone();
-        let tool: Arc<dyn Tool> = match id.as_str() {
-            "mode" => plugin_mode::ModePlugin.build(),
-            "diag" => plugin_diagnostics::DiagnosticsPlugin.build(),
-            "ai" => plugin_ai::AiPlugin.build(),
-            "tools" => plugin_tools_manager::ToolsManagerPlugin.build(),
-            "echo" => plugin_echo::EchoPlugin.build(),
-            "ping" => plugin_ping::PingPlugin.build(),
-            _ => {
-                // unknown tool id
-                continue;
-            }
+        let tool: Arc<dyn Tool> = if let Some(plugin) = plugins.get(spec.id.as_str()) {
+            plugin.build()
+        } else {
+            warn!("Unknown tool ID: {}", spec.id);
+
+            // unknown tool id
+            continue;
         };
 
         // tool configs directory (can override via TOOLS_DIR). Default to tools/ in cwd.
         let tools_dir = std::env::var("TOOLS_DIR").unwrap_or_else(|_| "./tools".to_owned());
 
         // Load per-tool config from tools_dir/<id>/config.yaml and merge.
-        if let Some(file_cfg) = load_tool_config(&tools_dir, &id) {
+        if let Some(file_cfg) = load_tool_config(&tools_dir, spec.id.as_str()) {
             spec.config = merge_yaml(file_cfg, spec.config); // file takes precedence
         }
         by_command.extend(
             spec.triggers
                 .commands
                 .iter()
-                .map(|c| (normalize_cmd(c), id.clone())),
+                .map(|c| (normalize_cmd(c), spec.id.clone())),
         );
         by_mention.extend(
             spec.triggers
                 .mentions
                 .iter()
-                .map(|m| (normalize_mention(m), id.clone())),
+                .map(|m| (normalize_mention(m), spec.id.clone())),
         );
-        by_id.insert(id, ToolEntry { spec, tool });
+        by_id.insert(spec.id.clone(), ToolEntry { spec, tool });
     }
 
     ToolsRegistry {

@@ -1,5 +1,4 @@
 pub mod plugin_trait;
-
 use std::{borrow::ToOwned, collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
