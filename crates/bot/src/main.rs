@@ -6,10 +6,7 @@ use std::{
     fs,
     io::IsTerminal as _,
     path::PathBuf,
-    sync::{
-        Arc, Once,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Once},
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -153,17 +150,7 @@ struct RelayPlan {
 async fn main() -> Result<()> {
     init_tracing();
     // Load .env if present so clap can pick up env vars.
-    // First, try standard upward search from CWD. If none found, also try
-    // the common repo layout path "matrix-ping-bot/.env" relative to CWD.
-    let loaded_default = dotenvy::dotenv().ok();
-    if loaded_default.is_none()
-        && let Ok(cwd) = std::env::current_dir()
-    {
-        let alt = cwd.join("matrix-ping-bot/.env");
-        if alt.exists() {
-            dotenvy::from_path(&alt).unwrap();
-        }
-    }
+    let _ = dotenvy::dotenv();
     let args = Args::parse();
 
     fs::create_dir_all(&args.store)
