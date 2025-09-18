@@ -39,21 +39,22 @@ impl Tool for DiagTool {
         let user_id = ctx
             .client
             .user_id()
-            .map_or("<unknown>".to_owned(), ToString::to_string);
+            .map_or_else(|| "<unknown>".to_owned(), ToString::to_string);
         let device_id = ctx
             .client
             .device_id()
-            .map_or("<unknown>".to_owned(), ToString::to_string);
+            .map_or_else(|| "<unknown>".to_owned(), ToString::to_string);
         let is_encrypted = ctx
             .room
             .latest_encryption_state()
             .await
             .map(|s| s.is_encrypted())
             .unwrap_or(false);
-        let mut bot_verified = None;
-        if let Ok(Some(dev)) = ctx.client.encryption().get_own_device().await {
-            bot_verified = Some(dev.is_verified());
-        }
+        let bot_verified = if let Ok(Some(dev)) = ctx.client.encryption().get_own_device().await {
+            Some(dev.is_verified())
+        } else {
+            None
+        };
         let backup_state = format!("{:?}", ctx.client.encryption().backups().state());
         let mut lines = vec![
             format!("diag for {}", ctx.room.room_id()),
