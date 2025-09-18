@@ -33,7 +33,7 @@ You can use flags or environment variables.
 
 ### Env file (.env)
 
-- Copy `.env.example` to `.env` in `matrix-ping-bot/` and fill values.
+- Copy `.env.example` to `.env` and fill values.
 - The app auto-loads `.env` and clap reads `MATRIX_*` vars.
 - Flags still override env values if both are set.
 
@@ -52,7 +52,7 @@ MATRIX_CONFIG=./config.yaml
 ### Flags
 
 ```sh
-cargo run -- \
+cargo run -p matrix-ping-bot -- \
   --homeserver https://matrix-client.matrix.org \
   --username your_bot_user \
   --password 'yourpassword' \
@@ -77,7 +77,7 @@ cargo run -- \
 MATRIX_HOMESERVER=https://matrix-client.matrix.org \
 MATRIX_USERNAME=your_bot_user \
 MATRIX_PASSWORD=yourpassword \
-cargo run --release
+cargo run -p matrix-ping-bot --release
 ```
 
 ### Cluster Config (YAML)
@@ -105,10 +105,10 @@ clusters:
 
 ## Git Hygiene
 
-- Do not commit secrets. `matrix-ping-bot/.gitignore` ignores `.env`, `config.yaml`, the E2EE store, and session.
+- Do not commit secrets. `.gitignore` ignores `.env`, `config.yaml`, the E2EE store, and session.
 - Create local files from examples:
-  - `cp matrix-ping-bot/.env.example matrix-ping-bot/.env`
-  - `cp matrix-ping-bot/config.example.yaml matrix-ping-bot/config.yaml`
+  - `cp .env.example .env`
+  - `cp config.example.yaml config.yaml`
 
 ## Troubleshooting
 
