@@ -6,24 +6,29 @@ use serde::Deserialize;
 
 use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
 
-pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
-    if !specs.iter().any(|t| t.id == "echo") {
-        specs.push(ToolSpec {
-            id: "echo".into(),
-            enabled: true,
-            dev_only: None,
-            triggers: ToolTriggers {
-                commands: vec!["!echo".into()],
-                mentions: vec![],
-            },
-            config: serde_yaml::Value::default(),
-        });
-    }
-}
+use tools::plugin_trait::Plugin;
 
-#[must_use]
-pub fn build() -> Arc<dyn Tool> {
-    Arc::new(EchoTool)
+pub struct EchoPlugin;
+
+impl Plugin for EchoPlugin {
+    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+        if !specs.iter().any(|t| t.id == "echo") {
+            specs.push(ToolSpec {
+                id: "echo".into(),
+                enabled: true,
+                dev_only: None,
+                triggers: ToolTriggers {
+                    commands: vec!["!echo".into()],
+                    mentions: vec![],
+                },
+                config: serde_yaml::Value::default(),
+            });
+        }
+    }
+
+    fn build(&self) -> Arc<dyn Tool> {
+        Arc::new(EchoTool)
+    }
 }
 
 pub struct EchoTool;

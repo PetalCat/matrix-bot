@@ -5,24 +5,29 @@ use async_trait::async_trait;
 
 use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
 
-pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
-    if !specs.iter().any(|t| t.id == "mode") {
-        specs.push(ToolSpec {
-            id: "mode".into(),
-            enabled: true,
-            dev_only: None,
-            triggers: ToolTriggers {
-                commands: vec!["!mode".into()],
-                mentions: vec![],
-            },
-            config: serde_yaml::Value::default(),
-        });
-    }
-}
+use tools::plugin_trait::Plugin;
 
-#[must_use]
-pub fn build() -> Arc<dyn Tool> {
-    Arc::new(ModeTool)
+pub struct ModePlugin;
+
+impl Plugin for ModePlugin {
+    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+        if !specs.iter().any(|t| t.id == "mode") {
+            specs.push(ToolSpec {
+                id: "mode".into(),
+                enabled: true,
+                dev_only: None,
+                triggers: ToolTriggers {
+                    commands: vec!["!mode".into()],
+                    mentions: vec![],
+                },
+                config: serde_yaml::Value::default(),
+            });
+        }
+    }
+
+    fn build(&self) -> Arc<dyn Tool> {
+        Arc::new(ModeTool)
+    }
 }
 
 pub struct ModeTool;
