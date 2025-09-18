@@ -1,0 +1,5 @@
+# Example diagnostics tool config (copy to config.yaml to tweak options)
+
+# Currently no required options. Uncomment future toggles below as needed.
+# show_backup_state: true
+# show_device_verification: true

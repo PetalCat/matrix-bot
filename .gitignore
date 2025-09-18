@@ -1,6 +1,9 @@
 # Local environment
 .env
 
+# Per-tool runtime configs
+src/tools/**/config.yaml
+
 # Bot state
 bot-store/
 session.json
@@ -9,3 +12,5 @@ data/
 
 # Build artifacts (if running from crate dir)
 /target/
+
+.DS_Store

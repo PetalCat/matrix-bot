@@ -22,6 +22,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
+time = { version = "0.3", features = ["formatting", "macros"] }
 
 [features]
 default = ["rpassword"]

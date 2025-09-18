@@ -1,7 +1,16 @@
 mod tools;
 
 use core::{fmt::Write as _, time::Duration};
-use std::{collections::HashMap, fs, io::IsTerminal as _, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    io::IsTerminal as _,
+    path::PathBuf,
+    sync::{
+        Arc, Once,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
@@ -36,9 +45,10 @@ use matrix_sdk::{
     },
 };
 use mime::Mime;
-
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+
+static AI_BACKFILL_ONCE: Once = Once::new();
 
 #[derive(Parser, Debug)]
 #[command(
@@ -245,6 +255,11 @@ async fn main() -> Result<()> {
         }
     });
     let registry = Arc::new(tools::build_registry(config.tools.clone(), ai_handle_env));
+    let history_dir = Arc::new(args.store.join("history"));
+    // Log registered tool commands/mentions for visibility
+    let mention_keys: Vec<String> = registry.by_mention.keys().cloned().collect();
+    let command_keys: Vec<String> = registry.by_command.keys().cloned().collect();
+    info!(mentions = ?mention_keys, commands = ?command_keys, "Registered tool triggers");
 
     // Auto-join handler for invites
     if !args.no_autojoin {
@@ -269,10 +284,37 @@ async fn main() -> Result<()> {
 
     // Message handler: tools + relay
     let registry_for_handler = Arc::clone(&registry);
+    let history_dir_for_handler = history_dir;
     client.add_event_handler(async move |ev: OriginalSyncRoomMessageEvent, room: Room, client: Client| {
-        // Ignore own messages
+        // Identify own user; do not early-return yet so we can record history even for own messages
         let Some(own_id) = client.user_id() else { return; };
-        if ev.sender == own_id { return; }
+
+        // After the first synced event, fire one-time AI history backfill so prev_batch is available
+        let client_for_backfill = client.clone();
+        let history_dir_for_backfill = Arc::clone(&history_dir_for_handler);
+        let registry_for_backfill = registry_for_handler.clone();
+        AI_BACKFILL_ONCE.call_once(move || {
+            let (enable, limit) = if let Some(entry) = registry_for_backfill.by_id.get("ai") {
+                let cfg = &entry.spec.config;
+                let enable = cfg
+                    .get("history_backfill_on_start")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let limit = cfg
+                    .get("history_backfill_lines")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(50) as usize;
+                (enable, limit)
+            } else {
+                (true, 50)
+            };
+            if enable {
+                let history_dir = (*history_dir_for_backfill).clone();
+                tokio::spawn(async move {
+                    crate::tools::ai::backfill_all(client_for_backfill, history_dir, limit).await;
+                });
+            }
+        });
 
         // Log incoming message details for diagnostics
         let msg_kind = match &ev.content.msgtype {
@@ -299,16 +341,36 @@ async fn main() -> Result<()> {
             MessageType::Notice(n) => Some(n.body.as_str()),
             MessageType::Audio(_) | MessageType::Emote(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => None,
         };
+        // Record this message into AI history as "[ts] Name:message" before handling
+        if let Some(text_body) = body_opt {
+            let sender_name = match room.get_member(&ev.sender).await {
+                Ok(Some(m)) => m
+                    .display_name().map_or_else(|| ev.sender.localpart().to_owned(), ToOwned::to_owned),
+                _ => ev.sender.localpart().to_owned(),
+            };
+            let ts = time::OffsetDateTime::now_utc();
+            let ts_str = ts
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default();
+            let msg = crate::tools::sanitize_line(text_body, 400);
+            let line = format!("[{ts_str}] {sender_name}:{msg}");
+            crate::tools::ai::append_history_line(&history_dir_for_handler, &room.room_id().to_owned(), &line);
+        }
+
+        // For own messages, stop after recording history; do not trigger tools/relay
+        if ev.sender == own_id { return; }
         if let Some(body) = body_opt.map(str::trim) {
             // !command
             if body.starts_with('!') {
                 let mut parts = body.splitn(2, ' ');
                 let cmd = parts.next().unwrap_or("");
                 let args_raw = parts.next().unwrap_or("").trim();
+                info!(cmd = %cmd, args = %args_raw, "Parsed command token");
                 if let Some(id) = registry_for_handler.by_command.get(cmd)
                     && let Some(entry) = registry_for_handler.by_id.get(id)
                 {
                     let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
+                    info!(tool = %id, arg_dev = arg_dev_flag, dev_active = dev_active, "Command routing");
                     if arg_dev_flag != dev_active {
                         info!(tool = %id, "Ignoring command due to env mismatch");
                     } else if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active {
@@ -316,34 +378,86 @@ async fn main() -> Result<()> {
                     } else if !registry_for_handler.is_enabled(id) {
                         info!(tool = %id, "Tool disabled");
                     } else {
-                        let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler) };
+                        let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
                         if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
                             warn!(error = %e, tool = %id, "Tool failed");
                         }
                     }
                 }
             }
-            // @mention
-            if let Some(first) = body.split_whitespace().next()
-                && let Some(id) = registry_for_handler.by_mention.get(first)
-                && let Some(entry) = registry_for_handler.by_id.get(id)
+            // @mention anywhere in the message (case-insensitive; tolerant of trailing punctuation)
             {
-                let args_raw = body[first.len()..].trim();
-                let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
-                if arg_dev_flag != dev_active {
-                    info!(tool = %id, "Ignoring mention due to env mismatch");
-                } else if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active {
-                    info!(tool = %id, "Ignoring dev-only tool in prod mode");
-                } else if !registry_for_handler.is_enabled(id) {
-                    info!(tool = %id, "Tool disabled");
-                } else {
-                    let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler) };
-                    if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
-                        warn!(error = %e, tool = %id, "Tool failed");
+                let mut mention_handled = false;
+                let mut search_from = 0usize;
+                for token_raw in body.split_whitespace() {
+                    // Find the token position in the original string starting from current cursor
+                    let token_index = if let Some(i) = body[search_from..].find(token_raw) { search_from + i } else {
+                        // advance cursor approximately and continue
+                        search_from = search_from.saturating_add(token_raw.len());
+                        continue;
+                    };
+                    search_from = token_index + token_raw.len();
+
+                    let token = token_raw.trim_end_matches([':', ',', '.', '!', '?', '—', '–', ')', ']', '>', '"', '\'']);
+                    let key = token.to_lowercase();
+                    info!(token_raw = %token_raw, token = %token, key = %key, "Checking mention token");
+                    if let Some(id) = registry_for_handler.by_mention.get(&key)
+                        && let Some(entry) = registry_for_handler.by_id.get(id)
+                    {
+                        info!(tool = %id, token_index, "Mention matched");
+                        // Use the FULL body as the prompt so earlier words are preserved
+                        // (the AI can see the initiator and -d as part of the message)
+                        let args_source = body;
+                        let (_ignored, arg_dev_flag) = extract_dev_flag(args_source);
+                        info!(tool = %id, arg_dev = arg_dev_flag, dev_active = dev_active, "Mention routing");
+                        if arg_dev_flag != dev_active {
+                            info!(tool = %id, "Ignoring mention due to env mismatch");
+                        } else if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active {
+                            info!(tool = %id, "Ignoring dev-only tool in prod mode");
+                        } else if !registry_for_handler.is_enabled(id) {
+                            info!(tool = %id, "Tool disabled");
+                        } else {
+                            let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
+                            if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
+                                warn!(error = %e, tool = %id, "Tool failed");
+                            }
+                        }
+                        mention_handled = true;
+                        break; // handle only first matched mention
+                    }
+                }
+                // Fallback: only if nothing handled above
+                if !mention_handled {
+                    let fallback_name = std::env::var("AI_NAME").unwrap_or_else(|_| "Claire".to_owned());
+                    let fallback_handle = format!("@{}", fallback_name.to_lowercase());
+                    let body_lc = body.to_lowercase();
+                    if body_lc.contains(&fallback_handle) {
+                        if let Some(entry) = registry_for_handler.by_id.get("ai") {
+                            // Use the FULL body as prompt for fallback as well
+                            let args_source = body;
+                            let (_ignored, arg_dev_flag) = extract_dev_flag(args_source);
+                            info!(tool = %"ai", arg_dev = arg_dev_flag, dev_active = dev_active, "Fallback mention routing by contains");
+                            if arg_dev_flag != dev_active {
+                                info!(tool = %"ai", "Ignoring mention due to env mismatch");
+                            } else if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active {
+                                info!(tool = %"ai", "Ignoring dev-only tool in prod mode");
+                            } else if !registry_for_handler.is_enabled("ai") {
+                                info!(tool = %"ai", "Tool disabled");
+                            } else {
+                                let ctx = tools::ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
+                                if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
+                                    warn!(error = %e, tool = %"ai", "Tool failed");
+                                }
+                            }
+                        } else {
+                            info!("Fallback mention found but 'ai' tool not registered");
+                        }
                     }
                 }
             }
         }
+
+        // (history already recorded above)
 
         // Relay to rooms in the same cluster.
         // - For text/notice/emote: send as plain text "DisplayName: message".

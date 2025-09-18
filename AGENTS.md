@@ -17,8 +17,15 @@ Simple Matrix bot using the Matrix Rust SDK with end‑to‑end encryption enabl
 ## Build
 
 ```sh
-build --release
+cargo build --release
 ```
+
+## Check
+
+```sh
+cargo fmt && cargo clippy
+```
+
 
 ## Run
 
