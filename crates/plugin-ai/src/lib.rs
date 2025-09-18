@@ -26,24 +26,29 @@ use tracing::{info, warn};
 
 use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text, str_conf, truncate};
 
-pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
-    if !specs.iter().any(|t| t.id == "ai") {
-        specs.push(ToolSpec {
-            id: "ai".into(),
-            enabled: true,
-            dev_only: Some(true),
-            triggers: ToolTriggers {
-                commands: vec!["!ai".into()],
-                mentions: vec![],
-            },
-            config: serde_yaml::Value::default(),
-        });
-    }
-}
+use tools::plugin_trait::Plugin;
 
-#[must_use]
-pub fn build() -> Arc<dyn Tool> {
-    Arc::new(AiTool)
+pub struct AiPlugin;
+
+impl Plugin for AiPlugin {
+    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+        if !specs.iter().any(|t| t.id == "ai") {
+            specs.push(ToolSpec {
+                id: "ai".into(),
+                enabled: true,
+                dev_only: Some(true),
+                triggers: ToolTriggers {
+                    commands: vec!["!ai".into()],
+                    mentions: vec![],
+                },
+                config: serde_yaml::Value::default(),
+            });
+        }
+    }
+
+    fn build(&self) -> Arc<dyn Tool> {
+        Arc::new(AiTool)
+    }
 }
 
 const DEFAULT_SYSTEM_PROMPT: &str = r"

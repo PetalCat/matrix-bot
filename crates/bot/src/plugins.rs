@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::Mutex;
-use tools::{Tool, ToolEntry, ToolSpec, ToolsRegistry};
+use tools::{Tool, ToolEntry, ToolSpec, ToolsRegistry, plugin_trait::Plugin};
 
 pub fn build_registry(
     config_tools: Option<Vec<ToolSpec>>,
@@ -13,16 +13,16 @@ pub fn build_registry(
 
     // defaults from each tool module
     let mut specs = config_tools.unwrap_or_default();
-    let plugins: Vec<fn(&mut Vec<ToolSpec>)> = vec![
-        plugin_ping::register_defaults,
-        plugin_mode::register_defaults,
-        plugin_diagnostics::register_defaults,
-        plugin_tools_manager::register_defaults,
-        plugin_ai::register_defaults,
-        plugin_echo::register_defaults,
+    let plugins: Vec<Box<dyn Plugin>> = vec![
+        Box::new(plugin_ping::PingPlugin),
+        Box::new(plugin_mode::ModePlugin),
+        Box::new(plugin_diagnostics::DiagnosticsPlugin),
+        Box::new(plugin_tools_manager::ToolsManagerPlugin),
+        Box::new(plugin_ai::AiPlugin),
+        Box::new(plugin_echo::EchoPlugin),
     ];
-    for register_defaults in plugins {
-        register_defaults(&mut specs);
+    for plugin in plugins {
+        plugin.register_defaults(&mut specs);
     }
     if let Some(handle) = env_ai_handle {
         append_mention(&mut specs, "ai", &handle);
@@ -46,12 +46,12 @@ pub fn build_registry(
     for mut spec in specs {
         let id = spec.id.clone();
         let tool: Arc<dyn Tool> = match id.as_str() {
-            "mode" => plugin_mode::build(),
-            "diag" => plugin_diagnostics::build(),
-            "ai" => plugin_ai::build(),
-            "tools" => plugin_tools_manager::build(),
-            "echo" => plugin_echo::build(),
-            "ping" => plugin_ping::build(),
+            "mode" => plugin_mode::ModePlugin.build(),
+            "diag" => plugin_diagnostics::DiagnosticsPlugin.build(),
+            "ai" => plugin_ai::AiPlugin.build(),
+            "tools" => plugin_tools_manager::ToolsManagerPlugin.build(),
+            "echo" => plugin_echo::EchoPlugin.build(),
+            "ping" => plugin_ping::PingPlugin.build(),
             _ => {
                 // unknown tool id
                 continue;

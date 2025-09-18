@@ -3,26 +3,29 @@ use std::{string::ToString, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 
-use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
+use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, plugin_trait::Plugin, send_text};
 
-pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
-    if !specs.iter().any(|t| t.id == "diag") {
-        specs.push(ToolSpec {
-            id: "diag".into(),
-            enabled: true,
-            dev_only: None,
-            triggers: ToolTriggers {
-                commands: vec!["!diag".into()],
-                mentions: vec![],
-            },
-            config: serde_yaml::Value::default(),
-        });
+pub struct DiagnosticsPlugin;
+
+impl Plugin for DiagnosticsPlugin {
+    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+        if !specs.iter().any(|t| t.id == "diag") {
+            specs.push(ToolSpec {
+                id: "diag".into(),
+                enabled: true,
+                dev_only: None,
+                triggers: ToolTriggers {
+                    commands: vec!["!diag".into()],
+                    mentions: vec![],
+                },
+                config: serde_yaml::Value::default(),
+            });
+        }
     }
-}
 
-#[must_use]
-pub fn build() -> Arc<dyn Tool> {
-    Arc::new(DiagTool)
+    fn build(&self) -> Arc<dyn Tool> {
+        Arc::new(DiagTool)
+    }
 }
 
 pub struct DiagTool;

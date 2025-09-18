@@ -5,24 +5,29 @@ use async_trait::async_trait;
 
 use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
 
-pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
-    if !specs.iter().any(|t| t.id == "tools") {
-        specs.push(ToolSpec {
-            id: "tools".to_owned(),
-            enabled: true,
-            dev_only: None,
-            triggers: ToolTriggers {
-                commands: vec!["!tools".to_owned()],
-                mentions: vec![],
-            },
-            config: serde_yaml::Value::default(),
-        });
-    }
-}
+use tools::plugin_trait::Plugin;
 
-#[must_use]
-pub fn build() -> Arc<dyn Tool> {
-    Arc::new(ToolsManager)
+pub struct ToolsManagerPlugin;
+
+impl Plugin for ToolsManagerPlugin {
+    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+        if !specs.iter().any(|t| t.id == "tools") {
+            specs.push(ToolSpec {
+                id: "tools".to_owned(),
+                enabled: true,
+                dev_only: None,
+                triggers: ToolTriggers {
+                    commands: vec!["!tools".to_owned()],
+                    mentions: vec![],
+                },
+                config: serde_yaml::Value::default(),
+            });
+        }
+    }
+
+    fn build(&self) -> Arc<dyn Tool> {
+        Arc::new(ToolsManager)
+    }
 }
 
 pub struct ToolsManager;

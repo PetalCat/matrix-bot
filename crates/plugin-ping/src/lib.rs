@@ -5,22 +5,27 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tools::{Tool, ToolContext, ToolSpec, send_text};
 
-pub fn register_defaults(specs: &mut Vec<tools::ToolSpec>) {
-    specs.push(tools::ToolSpec {
-        id: "ping".to_owned(),
-        enabled: true,
-        dev_only: None,
-        triggers: tools::ToolTriggers {
-            commands: vec!["!ping".to_owned()],
-            mentions: vec![],
-        },
-        config: serde_yaml::Value::default(),
-    });
-}
+use tools::plugin_trait::Plugin;
 
-#[must_use]
-pub fn build() -> Arc<dyn Tool> {
-    Arc::new(Ping)
+pub struct PingPlugin;
+
+impl Plugin for PingPlugin {
+    fn register_defaults(&self, specs: &mut Vec<tools::ToolSpec>) {
+        specs.push(tools::ToolSpec {
+            id: "ping".to_owned(),
+            enabled: true,
+            dev_only: None,
+            triggers: tools::ToolTriggers {
+                commands: vec!["!ping".to_owned()],
+                mentions: vec![],
+            },
+            config: serde_yaml::Value::default(),
+        });
+    }
+
+    fn build(&self) -> Arc<dyn Tool> {
+        Arc::new(Ping)
+    }
 }
 
 pub struct Ping;
