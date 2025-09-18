@@ -5,36 +5,34 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1"
-async-trait = "0.1"
-clap = { version = "4", features = ["derive", "env"] }
-dotenvy = "0.15"
-futures-util = "0.3"
-matrix-sdk = { version = "0.14", features = ["anyhow", "e2e-encryption", "sqlite"] }
-mime = "0.3"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-rpassword = { version = "7", optional = true }
-serde = { version = "1" }
-serde_derive = { version = "1" }
-serde_json = "1"
-serde_yaml = "0.9"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-url = "2"
-time = { version = "0.3", features = ["formatting", "macros"] }
+anyhow.workspace = true
+async-trait.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+futures-util.workspace = true
+matrix-sdk.workspace = true
+mime.workspace = true
+reqwest.workspace = true
+rpassword = { workspace = true, optional = true }
+serde.workspace = true
+serde_derive.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+time.workspace = true
+
+plugin-ai = {  path = "../plugin-ai" }
+plugin-diagnostics = {  path = "../plugin-diagnostics" }
+plugin-echo = {  path = "../plugin-echo" }
+plugin-mode = {  path = "../plugin-mode" }
+plugin-tools-manager = {  path = "../plugin-tools-manager" }
+tools = { path = "../tools" }
 
 [features]
 default = ["rpassword"]
 
-[lints.clippy]
-nursery = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-
-clone_on_ref_ptr = "warn"
-std_instead_of_core = "warn"
-str_to_string = "warn"
-unused_trait_names = "warn"
-wildcard_enum_match_arm = "warn"
-
-too_many_lines = "allow"
+[lints]
+workspace = true

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
+use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
 
 pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
     if !specs.iter().any(|t| t.id == "tools") {
@@ -20,6 +20,7 @@ pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
     }
 }
 
+#[must_use]
 pub fn build() -> Arc<dyn Tool> {
     Arc::new(ToolsManager)
 }

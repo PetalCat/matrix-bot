@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
+use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
 
 pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
     if !specs.iter().any(|t| t.id == "echo") {
@@ -21,6 +21,7 @@ pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
     }
 }
 
+#[must_use]
 pub fn build() -> Arc<dyn Tool> {
     Arc::new(EchoTool)
 }

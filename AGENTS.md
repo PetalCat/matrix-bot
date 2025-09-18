@@ -52,7 +52,7 @@ MATRIX_CONFIG=./config.yaml
 ### Flags
 
 ```sh
-cargo run -p matrix-ping-bot -- \
+cargo run -- \
   --homeserver https://matrix-client.matrix.org \
   --username your_bot_user \
   --password 'yourpassword' \
@@ -77,7 +77,7 @@ cargo run -p matrix-ping-bot -- \
 MATRIX_HOMESERVER=https://matrix-client.matrix.org \
 MATRIX_USERNAME=your_bot_user \
 MATRIX_PASSWORD=yourpassword \
-cargo run -p matrix-ping-bot --release
+cargo run --release
 ```
 
 ### Cluster Config (YAML)
