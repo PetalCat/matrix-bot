@@ -8,11 +8,11 @@ use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
 pub fn register_defaults(specs: &mut Vec<ToolSpec>) {
     if !specs.iter().any(|t| t.id == "tools") {
         specs.push(ToolSpec {
-            id: "tools".into(),
+            id: "tools".to_owned(),
             enabled: true,
             dev_only: None,
             triggers: ToolTriggers {
-                commands: vec!["!tools".into()],
+                commands: vec!["!tools".to_owned()],
                 mentions: vec![],
             },
             config: serde_yaml::Value::default(),

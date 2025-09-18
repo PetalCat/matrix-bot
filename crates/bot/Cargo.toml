@@ -28,6 +28,7 @@ plugin-ai = {  path = "../plugin-ai" }
 plugin-diagnostics = {  path = "../plugin-diagnostics" }
 plugin-echo = {  path = "../plugin-echo" }
 plugin-mode = {  path = "../plugin-mode" }
+plugin-ping = {  path = "../plugin-ping" }
 plugin-tools-manager = {  path = "../plugin-tools-manager" }
 tools = { path = "../tools" }
 

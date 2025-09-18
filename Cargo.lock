@@ -2052,6 +2052,7 @@ dependencies = [
  "plugin-diagnostics",
  "plugin-echo",
  "plugin-mode",
+ "plugin-ping",
  "plugin-tools-manager",
  "reqwest",
  "rpassword",
@@ -2718,13 +2719,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-ping"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde_yaml",
+ "tools",
+]
+
+[[package]]
 name = "plugin-tools-manager"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "serde",
- "serde_derive",
  "serde_yaml",
  "tools",
 ]
