@@ -2,7 +2,7 @@
 .env
 
 # Per-tool runtime configs
-src/tools/**/config.yaml
+config.yaml
 
 # Bot state
 bot-store/

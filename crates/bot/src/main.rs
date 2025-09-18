@@ -46,6 +46,7 @@ use serde::{Deserialize, Serialize};
 use tools::{ToolContext, ToolSpec, sanitize_line};
 use tracing::{info, warn};
 
+// TODO: OnceLock
 static AI_BACKFILL_ONCE: Once = Once::new();
 
 #[derive(Parser, Debug)]
