@@ -1,8 +1,7 @@
 mod plugins;
 
-use core::{fmt::Write as _, time::Duration};
+use core::time::Duration;
 use std::{
-    collections::HashMap,
     fs,
     io::IsTerminal as _,
     path::PathBuf,
@@ -13,37 +12,25 @@ use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
 use futures_util::StreamExt as _;
 use matrix_sdk::{
-    Client,
-    SessionMeta,
-    // media helpers used via client.media()
-    attachment::AttachmentConfig,
+    Client, SessionMeta,
     authentication::{SessionTokens, matrix::MatrixSession},
     config::SyncSettings,
     encryption::verification::{
         SasState, SasVerification, Verification, VerificationRequest, VerificationRequestState,
     },
     room::Room,
-    ruma::{
-        OwnedRoomId, RoomAliasId, RoomId,
-        events::{
-            key::verification::{
-                request::ToDeviceKeyVerificationRequestEvent,
-                start::ToDeviceKeyVerificationStartEvent,
-            },
-            room::{
-                member::{MembershipState, StrippedRoomMemberEvent},
-                message::{
-                    AudioMessageEventContent, FileMessageEventContent, ImageMessageEventContent,
-                    MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
-                    VideoMessageEventContent,
-                },
-            },
+    ruma::events::{
+        key::verification::{
+            request::ToDeviceKeyVerificationRequestEvent, start::ToDeviceKeyVerificationStartEvent,
+        },
+        room::{
+            member::{MembershipState, StrippedRoomMemberEvent},
+            message::{MessageType, OriginalSyncRoomMessageEvent},
         },
     },
 };
-use mime::Mime;
+use plugin_core::{PluginContext, PluginSpec, sanitize_line, truncate};
 use serde::{Deserialize, Serialize};
-use tools::{ToolContext, ToolSpec, sanitize_line};
 use tracing::{info, warn};
 
 // TODO: OnceLock
@@ -115,39 +102,27 @@ struct SavedSession {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct BotConfig {
-    clusters: Vec<RoomCluster>,
+pub(crate) struct BotConfig {
+    pub(crate) clusters: Vec<RoomCluster>,
     #[serde(default)]
-    reupload_media: Option<bool>,
+    pub(crate) reupload_media: Option<bool>,
     #[serde(default)]
-    caption_media: Option<bool>,
+    pub(crate) caption_media: Option<bool>,
     #[serde(default)]
-    dev_mode: Option<bool>,
+    pub(crate) dev_mode: Option<bool>,
     #[serde(default)]
-    dev_id: Option<String>,
-    #[serde(default)]
-    tools: Option<Vec<ToolSpec>>,
+    pub(crate) dev_id: Option<String>,
+    #[serde(default, alias = "tools")]
+    pub(crate) plugins: Option<Vec<PluginSpec>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct RoomCluster {
-    rooms: Vec<String>,
+pub(crate) struct RoomCluster {
+    pub(crate) rooms: Vec<String>,
     #[serde(default)]
-    reupload_media: Option<bool>,
+    pub(crate) reupload_media: Option<bool>,
     #[serde(default)]
-    caption_media: Option<bool>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RelayOptions {
-    reupload_media: bool,
-    caption_media: bool,
-}
-
-#[derive(Debug, Clone)]
-struct RelayPlan {
-    map: HashMap<OwnedRoomId, Vec<OwnedRoomId>>,
-    opts: HashMap<OwnedRoomId, RelayOptions>,
+    pub(crate) caption_media: Option<bool>,
 }
 
 #[tokio::main]
@@ -240,7 +215,6 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Load relay configuration and resolve room IDs
     let config = load_config(&args.config)?;
     let env_dev = matches!(args.mode.as_deref(), Some(m) if m.eq_ignore_ascii_case("dev"));
     let dev_active = (args.dev || env_dev) && config.dev_mode.unwrap_or(false);
@@ -250,10 +224,9 @@ async fn main() -> Result<()> {
             "Dev mode requested but no dev_id provided in config.yaml"
         ));
     }
-    let relay = Arc::new(resolve_relay_map(&client, &config).await?);
     // Loud banner so mode is obvious at startup
     print_mode_banner(dev_active, dev_id.as_deref());
-    // Build tools registry
+    // Build plugin registry
     let ai_handle_env = std::env::var("AI_HANDLE").ok().map(|raw| {
         if raw.starts_with('@') {
             raw
@@ -261,12 +234,33 @@ async fn main() -> Result<()> {
             format!("@{raw}")
         }
     });
-    let registry = Arc::new(plugins::build_registry(config.tools.clone(), ai_handle_env));
+    let registry = plugins::build_registry(&config, ai_handle_env).await;
     let history_dir = Arc::new(args.store.join("history"));
-    // Log registered tool commands/mentions for visibility
-    let mention_keys: Vec<String> = registry.by_mention.keys().cloned().collect();
-    let command_keys: Vec<String> = registry.by_command.keys().cloned().collect();
-    info!(mentions = ?mention_keys, commands = ?command_keys, "Registered tool triggers");
+    // Log registered plugin commands/mentions for visibility
+    let entries_for_log = registry.entries().await;
+    let mut mention_set = std::collections::BTreeSet::new();
+    let mut command_set = std::collections::BTreeSet::new();
+    for (_, entry) in &entries_for_log {
+        for cmd in &entry.spec.triggers.commands {
+            let normalized = if cmd.starts_with('!') {
+                cmd.clone()
+            } else {
+                format!("!{cmd}")
+            };
+            command_set.insert(normalized);
+        }
+        for mention in &entry.spec.triggers.mentions {
+            let raw = if mention.starts_with('@') {
+                mention.clone()
+            } else {
+                format!("@{mention}")
+            };
+            mention_set.insert(raw.to_lowercase());
+        }
+    }
+    let mention_keys: Vec<String> = mention_set.into_iter().collect();
+    let command_keys: Vec<String> = command_set.into_iter().collect();
+    info!(mentions = ?mention_keys, commands = ?command_keys, "Registered plugin triggers");
 
     // Auto-join handler for invites
     if !args.no_autojoin {
@@ -289,7 +283,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Message handler: tools + relay
+    // Message handler: plugins + relay
     let registry_for_handler = Arc::clone(&registry);
     let history_dir_for_handler = history_dir;
     let dev_id_for_handler = dev_id.clone();
@@ -302,24 +296,29 @@ async fn main() -> Result<()> {
         let history_dir_for_backfill = Arc::clone(&history_dir_for_handler);
         let registry_for_backfill = Arc::clone(&registry_for_handler);
         AI_BACKFILL_ONCE.call_once(move || {
-            let (enable, limit) = registry_for_backfill.by_id.get("ai").map_or((true, 50), |entry| {
-                let cfg = &entry.spec.config;
-                let enable = cfg
-                    .get("history_backfill_on_start")
-                    .and_then(serde_yaml::Value::as_bool)
-                    .unwrap_or(true);
-                let limit = cfg
-                    .get("history_backfill_lines")
-                    .and_then(serde_yaml::Value::as_u64)
-                    .unwrap_or(50);
-                (enable, limit)
-            });
-            if enable {
-                let history_dir = (*history_dir_for_backfill).clone();
-                tokio::spawn(async move {
+            let registry = Arc::clone(&registry_for_backfill);
+            let history_dir = (*history_dir_for_backfill).clone();
+            tokio::spawn(async move {
+                let (enable, limit) = registry
+                    .entry("ai")
+                    .await
+                    .map(|entry| {
+                        let cfg = &entry.spec.config;
+                        let enable = cfg
+                            .get("history_backfill_on_start")
+                            .and_then(serde_yaml::Value::as_bool)
+                            .unwrap_or(true);
+                        let limit = cfg
+                            .get("history_backfill_lines")
+                            .and_then(serde_yaml::Value::as_u64)
+                            .unwrap_or(50);
+                        (enable, limit)
+                    })
+                    .unwrap_or((true, 50));
+                if enable {
                     plugin_ai::backfill_all(client_for_backfill, history_dir, limit).await;
-                });
-            }
+                }
+            });
         });
 
         // Log incoming message details for diagnostics
@@ -341,7 +340,7 @@ async fn main() -> Result<()> {
         };
         info!(room_id = %room.room_id(), sender = %ev.sender, kind = %msg_kind, body = ?body_snippet, "Incoming message");
 
-        // Plain text/notice messages; tools by !command or @mention
+        // Plain text/notice messages; plugins by !command or @mention
         let body_opt = match &ev.content.msgtype {
             MessageType::Text(t) => Some(t.body.as_str()),
             MessageType::Notice(n) => Some(n.body.as_str()),
@@ -363,7 +362,7 @@ async fn main() -> Result<()> {
             plugin_ai::append_history_line(&history_dir_for_handler, &room.room_id().to_owned(), &line);
         }
 
-        // For own messages, stop after recording history; do not trigger tools/relay
+        // For own messages, stop after recording history; do not trigger plugins/relay
         if ev.sender == own_id { return; }
         if let Some(body) = body_opt.map(str::trim) {
             let dev_id_opt = dev_id_for_handler.as_deref();
@@ -374,28 +373,35 @@ async fn main() -> Result<()> {
                 let args_raw = parts.next().unwrap_or("").trim();
                 let (normalized_cmd, routing) = classify_command_token(cmd, dev_id_opt);
                 info!(cmd = %cmd, normalized_cmd = %normalized_cmd, route = ?routing, args = %args_raw, dev_active = dev_active, "Parsed command token");
-                if let Some(id) = registry_for_handler.by_command.get(&normalized_cmd)
-                    && let Some(entry) = registry_for_handler.by_id.get(id)
+                if let Some(entry) = registry_for_handler
+                    .entry_by_command(&normalized_cmd)
+                    .await
                 {
+                    let plugin_id = entry.spec.id.clone();
                     let args_clean = args_raw.to_owned();
                     match routing {
                         DevRouting::OtherDev => {
-                            info!(tool = %id, "Ignoring command targeted at different dev id");
+                            info!(plugin = %plugin_id, "Ignoring command targeted at different dev id");
                         }
                         DevRouting::Dev if !dev_active => {
-                            info!(tool = %id, "Ignoring dev command in prod mode");
+                            info!(plugin = %plugin_id, "Ignoring dev command in prod mode");
                         }
                         DevRouting::Prod if dev_active => {
-                            info!(tool = %id, "Ignoring prod command in dev mode");
+                            info!(plugin = %plugin_id, "Ignoring prod command in dev mode");
                         }
-                        _ if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active => {
-                            info!(tool = %id, "Ignoring dev-only tool in prod mode");
+                        _ if entry
+                            .spec
+                            .dev_only
+                            .unwrap_or_else(|| entry.plugin.dev_only())
+                            && !dev_active =>
+                        {
+                            info!(plugin = %plugin_id, "Ignoring dev-only plugin in prod mode");
                         }
-                        _ if !registry_for_handler.is_enabled(id) => {
-                            info!(tool = %id, "Tool disabled");
+                        _ if !registry_for_handler.is_enabled(&plugin_id).await => {
+                            info!(plugin = %plugin_id, "Plugin disabled");
                         }
                         _ => {
-                            let ctx = ToolContext {
+                            let ctx = PluginContext {
                                 client: client.clone(),
                                 room: room.clone(),
                                 dev_active,
@@ -403,8 +409,8 @@ async fn main() -> Result<()> {
                                 registry: Arc::clone(&registry_for_handler),
                                 history_dir: Arc::clone(&history_dir_for_handler),
                             };
-                            if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
-                                warn!(error = %e, tool = %id, "Tool failed");
+                            if let Err(e) = entry.plugin.run(&ctx, &args_clean, &entry.spec).await {
+                                warn!(error = %e, plugin = %plugin_id, "Plugin failed");
                             }
                         }
                     }
@@ -427,31 +433,38 @@ async fn main() -> Result<()> {
                     let (normalized_mention, routing) = classify_mention_token(token, dev_id_opt);
                     let key = normalized_mention.to_lowercase();
                     info!(token_raw = %token_raw, token = %token, normalized = %normalized_mention, key = %key, route = ?routing, "Checking mention token");
-                    if let Some(id) = registry_for_handler.by_mention.get(&key)
-                        && let Some(entry) = registry_for_handler.by_id.get(id)
+                    if let Some(entry) = registry_for_handler
+                        .entry_by_mention(&key)
+                        .await
                     {
-                        info!(tool = %id, token_index, "Mention matched");
+                        let plugin_id = entry.spec.id.clone();
+                        info!(plugin = %plugin_id, token_index, "Mention matched");
                         // Use the FULL body as the prompt so earlier words are preserved
                         // (the AI can see the initiator and routing prefix as part of the message)
                         let args_source = body;
                         match routing {
                             DevRouting::OtherDev => {
-                                info!(tool = %id, "Ignoring mention targeted at different dev id");
+                                info!(plugin = %plugin_id, "Ignoring mention targeted at different dev id");
                             }
                             DevRouting::Dev if !dev_active => {
-                                info!(tool = %id, "Ignoring dev mention in prod mode");
+                                info!(plugin = %plugin_id, "Ignoring dev mention in prod mode");
                             }
                             DevRouting::Prod if dev_active => {
-                                info!(tool = %id, "Ignoring prod mention in dev mode");
+                                info!(plugin = %plugin_id, "Ignoring prod mention in dev mode");
                             }
-                            _ if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active => {
-                                info!(tool = %id, "Ignoring dev-only tool in prod mode");
+                            _ if entry
+                                .spec
+                                .dev_only
+                                .unwrap_or_else(|| entry.plugin.dev_only())
+                                && !dev_active =>
+                            {
+                                info!(plugin = %plugin_id, "Ignoring dev-only plugin in prod mode");
                             }
-                            _ if !registry_for_handler.is_enabled(id) => {
-                                info!(tool = %id, "Tool disabled");
+                            _ if !registry_for_handler.is_enabled(&plugin_id).await => {
+                                info!(plugin = %plugin_id, "Plugin disabled");
                             }
                             _ => {
-                                let ctx = ToolContext {
+                                let ctx = PluginContext {
                                     client: client.clone(),
                                     room: room.clone(),
                                     dev_active,
@@ -459,8 +472,8 @@ async fn main() -> Result<()> {
                                     registry: Arc::clone(&registry_for_handler),
                                     history_dir: Arc::clone(&history_dir_for_handler),
                                 };
-                                if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
-                                    warn!(error = %e, tool = %id, "Tool failed");
+                                if let Err(e) = entry.plugin.run(&ctx, args_source, &entry.spec).await {
+                                    warn!(error = %e, plugin = %plugin_id, "Plugin failed");
                                 }
                             }
                         }
@@ -483,28 +496,33 @@ async fn main() -> Result<()> {
                     if let Some((handle, routing)) = fallback_route {
                         let handle_lc = handle.to_lowercase();
                         if body_lc.contains(&handle_lc) {
-                            if let Some(entry) = registry_for_handler.by_id.get("ai") {
+                            if let Some(entry) = registry_for_handler.entry("ai").await {
                                 // Use the FULL body as prompt for fallback as well
                                 let args_source = body;
-                                info!(tool = %"ai", route = ?routing, dev_active = dev_active, "Fallback mention routing by contains");
+                                info!(plugin = %"ai", route = ?routing, dev_active = dev_active, "Fallback mention routing by contains");
                                 match routing {
                                     DevRouting::Dev if !dev_active => {
-                                        info!(tool = %"ai", "Ignoring dev mention in prod mode");
+                                        info!(plugin = %"ai", "Ignoring dev mention in prod mode");
                                     }
                                     DevRouting::Prod if dev_active => {
-                                        info!(tool = %"ai", "Ignoring prod mention in dev mode");
+                                        info!(plugin = %"ai", "Ignoring prod mention in dev mode");
                                     }
                                     DevRouting::OtherDev => {
-                                        info!(tool = %"ai", "Ignoring mention targeted at different dev id");
+                                        info!(plugin = %"ai", "Ignoring mention targeted at different dev id");
                                     }
-                                    _ if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active => {
-                                        info!(tool = %"ai", "Ignoring dev-only tool in prod mode");
+                                    _ if entry
+                                        .spec
+                                        .dev_only
+                                        .unwrap_or_else(|| entry.plugin.dev_only())
+                                        && !dev_active =>
+                                    {
+                                        info!(plugin = %"ai", "Ignoring dev-only plugin in prod mode");
                                     }
-                                    _ if !registry_for_handler.is_enabled("ai") => {
-                                        info!(tool = %"ai", "Tool disabled");
+                                    _ if !registry_for_handler.is_enabled("ai").await => {
+                                        info!(plugin = %"ai", "Plugin disabled");
                                     }
                                     _ => {
-                                        let ctx = ToolContext {
+                                        let ctx = PluginContext {
                                             client: client.clone(),
                                             room: room.clone(),
                                             dev_active,
@@ -512,13 +530,13 @@ async fn main() -> Result<()> {
                                             registry: Arc::clone(&registry_for_handler),
                                             history_dir: Arc::clone(&history_dir_for_handler),
                                         };
-                                        if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
-                                            warn!(error = %e, tool = %"ai", "Tool failed");
+                                        if let Err(e) = entry.plugin.run(&ctx, args_source, &entry.spec).await {
+                                            warn!(error = %e, plugin = %"ai", "Plugin failed");
                                         }
                                     }
                                 }
                             } else {
-                                info!("Fallback mention found but 'ai' tool not registered");
+                                info!("Fallback mention found but 'ai' plugin not registered");
                             }
                         }
                     }
@@ -528,120 +546,40 @@ async fn main() -> Result<()> {
 
         // (history already recorded above)
 
-        // Relay to rooms in the same cluster.
-        // - For text/notice/emote: send as plain text "DisplayName: message".
-        // - For other types: forward original content unchanged.
-        if dev_active {
-            info!(room_id = %room.room_id(), "Dev mode active: relay disabled");
-        } else {
-            let source_id = room.room_id().to_owned();
-            if let Some(targets) = relay.map.get(&source_id).cloned() {
-            let opts = relay.opts.get(&source_id).copied().unwrap_or(RelayOptions { reupload_media: true, caption_media: true });
-            // Resolve sender display name in the source room
-            let display_name = match room.get_member(&ev.sender).await {
-                Ok(Some(m)) => m
-                    .display_name().unwrap_or_else(|| ev.sender.localpart()).to_owned(),
-                _ => ev.sender.localpart().to_owned(),
+        // Passive plugins (e.g., relay)
+        let passive_entries = registry_for_handler.entries().await;
+        if !passive_entries.is_empty() {
+            let base_ctx = PluginContext {
+                client: client.clone(),
+                room: room.clone(),
+                dev_active,
+                dev_id: dev_id_for_handler.clone(),
+                registry: Arc::clone(&registry_for_handler),
+                history_dir: Arc::clone(&history_dir_for_handler),
             };
-            let display_name_bold = to_bold(&display_name);
 
-            let mut formatted_text: Option<String> = None;
-            match &ev.content.msgtype {
-                MessageType::Text(t) => {
-                    let (quoted, main) = split_reply_fallback(&t.body);
-                    let mut out = String::new();
-                    if let Some(q) = quoted {
-                        writeln!(out, "↪ {}", truncate(&q, 300)).unwrap();
-                    }
-                    write!(out, "{}: {}", display_name_bold, main.trim()).unwrap();
-                    formatted_text = Some(out);
+            for (plugin_id, entry) in passive_entries {
+                if !entry.plugin.handles_room_messages() {
+                    continue;
                 }
-                MessageType::Notice(n) => {
-                    let (quoted, main) = split_reply_fallback(&n.body);
-                    let mut out = String::new();
-                    if let Some(q) = quoted {
-                        writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
-                    }
-                    write!(out,"{}: {}", display_name_bold, main.trim()).unwrap();
-                    formatted_text = Some(out);
+                if entry
+                    .spec
+                    .dev_only
+                    .unwrap_or_else(|| entry.plugin.dev_only())
+                    && !dev_active
+                {
+                    continue;
                 }
-                MessageType::Emote(e) => {
-                    let (quoted, main) = split_reply_fallback(&e.body);
-                    let mut out = String::new();
-                    if let Some(q) = quoted {
-                        writeln!(out,"↪ {}", truncate(&q, 300)).unwrap();
-                    }
-                    write!(out,"{}: * {}", display_name_bold, main.trim()).unwrap();
-                    formatted_text = Some(out);
+                if !registry_for_handler.is_enabled(&plugin_id).await {
+                    continue;
                 }
-                MessageType::Audio(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => {}
-            }
-
-            for target_id in targets {
-                if target_id == source_id { continue; }
-                if let Some(room_handle) = client.get_room(&target_id) {
-                    let send_res = if let Some(text) = &formatted_text {
-                        let content = RoomMessageEventContent::text_plain(text.clone());
-                        room_handle.send(content).await
-                    } else {
-                        // Try download -> reupload -> send for common media types
-                        match &ev.content.msgtype {
-                            MessageType::Image(img) => {
-                                if opts.reupload_media {
-                                    match reupload_image(&client, img).await {
-                                        Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
-                                        Err(e) => { warn!(error = %e, "Image reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
-                                    }
-                                } else { room_handle.send(ev.content.clone()).await }
-                            }
-                            MessageType::File(file) => {
-                                if opts.reupload_media {
-                                    match reupload_file(&client, file).await {
-                                        Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
-                                        Err(e) => { warn!(error = %e, "File reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
-                                    }
-                                } else { room_handle.send(ev.content.clone()).await }
-                            }
-                            MessageType::Audio(audio) => {
-                                if opts.reupload_media {
-                                    match reupload_audio(&client, audio).await {
-                                        Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
-                                        Err(e) => { warn!(error = %e, "Audio reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
-                                    }
-                                } else { room_handle.send(ev.content.clone()).await }
-                            }
-                            MessageType::Video(video) => {
-                                if opts.reupload_media {
-                                    match reupload_video(&client, video).await {
-                                        Ok((body, mime, data)) => send_attachment(&room_handle, &body, &mime, data).await,
-                                        Err(e) => { warn!(error = %e, "Video reupload failed; forwarding original event"); room_handle.send(ev.content.clone()).await },
-                                    }
-                                } else { room_handle.send(ev.content.clone()).await }
-                            }
-                            MessageType::Emote(_) | MessageType::Location(_) | MessageType::Notice(_) | MessageType::ServerNotice(_) | MessageType::Text(_) | MessageType::VerificationRequest(_) | _ => room_handle.send(ev.content.clone()).await,
-                        }
-                    };
-                    match send_res {
-                        Ok(_) => {
-                            info!(from = %source_id, to = %target_id, sender = %ev.sender, "Relayed message");
-                            if formatted_text.is_none() && opts.caption_media {
-                                let kind = match &ev.content.msgtype {
-                                    MessageType::Image(_) => "image", MessageType::File(_) => "file", MessageType::Audio(_) => "audio", MessageType::Video(_) => "video", MessageType::Emote(_) | MessageType::Location(_) | MessageType::Notice(_) | MessageType::ServerNotice(_) | MessageType::Text(_) | MessageType::VerificationRequest(_) | _ => ""
-                                };
-                                if !kind.is_empty() {
-                                let caption = format!("{display_name_bold}: sent a {kind}");
-                                    let _ = room_handle.send(RoomMessageEventContent::text_plain(caption)).await;
-                                }
-                            }
-                        }
-                        Err(e) => warn!(error = %e, from = %source_id, to = %target_id, "Failed to relay message"),
-                    }
-                } else {
-                    warn!(from = %source_id, to = %target_id, "No handle for target room; skipping relay");
+                if let Err(e) = entry
+                    .plugin
+                    .on_room_message(&base_ctx, &ev, &entry.spec)
+                    .await
+                {
+                    warn!(error = %e, plugin = %plugin_id, "Plugin on_room_message failed");
                 }
-            }
-            } else {
-                info!(room_id = %source_id, "No relay mapping for this room; not forwarding");
             }
         }
     });
@@ -758,83 +696,6 @@ fn print_mode_banner(dev_active: bool, dev_id: Option<&str>) {
     }
 }
 
-async fn resolve_relay_map(client: &Client, cfg: &BotConfig) -> Result<RelayPlan> {
-    let mut map: HashMap<OwnedRoomId, Vec<OwnedRoomId>> = HashMap::new();
-    let mut opts: HashMap<OwnedRoomId, RelayOptions> = HashMap::new();
-
-    for cluster in &cfg.clusters {
-        // Resolve each string to a room ID. Support either !room:server IDs or #alias:server
-        let mut resolved: Vec<OwnedRoomId> = Vec::new();
-        for room_ref in &cluster.rooms {
-            if let Ok(id) = RoomId::parse(room_ref) {
-                resolved.push(id.clone());
-                continue;
-            }
-            if room_ref.starts_with('#') {
-                match RoomAliasId::parse(room_ref) {
-                    Ok(alias) => match client.resolve_room_alias(&alias).await {
-                        Ok(resp) => {
-                            resolved.push(resp.room_id.clone());
-                        }
-                        Err(e) => {
-                            warn!(alias = %room_ref, error = %e, "Failed to resolve room alias; skipping");
-                        }
-                    },
-                    Err(_) => {
-                        warn!(alias = %room_ref, "Invalid room alias; skipping");
-                    }
-                }
-            } else {
-                warn!(room = %room_ref, "Invalid room reference (expect !room_id or #alias); skipping");
-            }
-        }
-
-        // Resolve options with precedence: cluster overrides -> cfg defaults -> hard defaults
-        let reupload = cluster
-            .reupload_media
-            .or(cfg.reupload_media)
-            .unwrap_or(true);
-        let caption = cluster.caption_media.or(cfg.caption_media).unwrap_or(true);
-
-        // For each room in the cluster, set its peers and options
-        for r in &resolved {
-            let peers: Vec<OwnedRoomId> = resolved.iter().filter(|x| *x != r).cloned().collect();
-            map.entry(r.clone())
-                .and_modify(|v| {
-                    // merge peers (dedup naive)
-                    for p in &peers {
-                        if !v.contains(p) {
-                            v.push(p.clone());
-                        }
-                    }
-                })
-                .or_insert(peers);
-            opts.insert(
-                r.clone(),
-                RelayOptions {
-                    reupload_media: reupload,
-                    caption_media: caption,
-                },
-            );
-        }
-    }
-
-    info!(
-        clusters = cfg.clusters.len(),
-        rooms = map.len(),
-        "Loaded relay mapping"
-    );
-    for (from, peers) in &map {
-        let peer_list = peers
-            .iter()
-            .map(|p| p.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        info!(from = %from, peers = %peer_list, "Relay mapping entry");
-    }
-    Ok(RelayPlan { map, opts })
-}
-
 async fn handle_verification_request(request: VerificationRequest, auto_confirm: bool) {
     info!(user = %request.other_user_id(), "Accepting verification request");
     if let Err(e) = request.accept().await {
@@ -931,60 +792,6 @@ fn save_session(path: &PathBuf, session: &SavedSession) -> Result<()> {
     Ok(())
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    let mut out = String::new();
-    for ch in s.chars().take(max) {
-        out.push(ch);
-    }
-    out
-}
-
-fn to_bold(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'A'..='Z' => char::from_u32('𝐀' as u32 + (c as u32 - 'A' as u32)).unwrap_or(c),
-            'a'..='z' => char::from_u32('𝐚' as u32 + (c as u32 - 'a' as u32)).unwrap_or(c),
-            '0'..='9' => char::from_u32('𝟎' as u32 + (c as u32 - '0' as u32)).unwrap_or(c),
-            _ => c,
-        })
-        .collect()
-}
-
-// Best-effort parser for Matrix fallback reply bodies. Many clients send a quoted
-// block (lines starting with "> ") followed by a blank line, then the reply.
-// Returns (Some(quote_snippet), main_text) if a quote is detected.
-fn split_reply_fallback(body: &str) -> (Option<String>, String) {
-    // Find first empty line separator
-    if let Some(sep_idx) = body.find("\n\n") {
-        let (quoted_block, rest) = body.split_at(sep_idx);
-        // rest starts with two newlines
-        let main = rest
-            .trim_start_matches('\n')
-            .trim_start_matches('\n')
-            .to_owned();
-        // Collect quoted lines without leading "> "
-        let mut quoted_lines = Vec::new();
-        for line in quoted_block.lines() {
-            if let Some(stripped) = line.strip_prefix("> ") {
-                quoted_lines.push(stripped.to_owned());
-            } else if line.starts_with('>') {
-                let s = line.trim_start_matches('>').trim_start();
-                quoted_lines.push(s.to_owned());
-            }
-        }
-        if !quoted_lines.is_empty() {
-            let quoted = quoted_lines.join(" ");
-            return (Some(quoted.trim().to_owned()), main);
-        }
-    }
-    (None, body.to_owned())
-}
-
-fn parse_mime(opt: Option<&str>) -> Mime {
-    opt.and_then(|s| s.parse::<Mime>().ok())
-        .unwrap_or(mime::APPLICATION_OCTET_STREAM)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DevRouting {
     Prod,
@@ -1024,75 +831,4 @@ fn classify_mention_token(token: &str, dev_id: Option<&str>) -> (String, DevRout
         }
     }
     (token.to_owned(), DevRouting::Prod)
-}
-
-async fn reupload_image(
-    client: &Client,
-    img: &ImageMessageEventContent,
-) -> Result<(String, Mime, Vec<u8>)> {
-    let body = img.body.clone();
-    let mime = parse_mime(img.info.as_ref().and_then(|i| i.mimetype.as_deref()));
-    let data_opt = client
-        .media()
-        .get_file(&img.clone(), true)
-        .await
-        .context("downloading image")?;
-    let data = data_opt.ok_or_else(|| anyhow!("image bytes missing"))?;
-    Ok((body, mime, data))
-}
-
-async fn reupload_file(
-    client: &Client,
-    file: &FileMessageEventContent,
-) -> Result<(String, Mime, Vec<u8>)> {
-    let body = file.body.clone();
-    let mime = parse_mime(file.info.as_ref().and_then(|i| i.mimetype.as_deref()));
-    let data_opt = client
-        .media()
-        .get_file(&file.clone(), true)
-        .await
-        .context("downloading file")?;
-    let data = data_opt.ok_or_else(|| anyhow!("file bytes missing"))?;
-    Ok((body, mime, data))
-}
-
-async fn reupload_audio(
-    client: &Client,
-    audio: &AudioMessageEventContent,
-) -> Result<(String, Mime, Vec<u8>)> {
-    let body = audio.body.clone();
-    let mime = parse_mime(audio.info.as_ref().and_then(|i| i.mimetype.as_deref()));
-    let data_opt = client
-        .media()
-        .get_file(&audio.clone(), true)
-        .await
-        .context("downloading audio")?;
-    let data = data_opt.ok_or_else(|| anyhow!("audio bytes missing"))?;
-    Ok((body, mime, data))
-}
-
-async fn reupload_video(
-    client: &Client,
-    video: &VideoMessageEventContent,
-) -> Result<(String, Mime, Vec<u8>)> {
-    let body = video.body.clone();
-    let mime = parse_mime(video.info.as_ref().and_then(|i| i.mimetype.as_deref()));
-    let data_opt = client
-        .media()
-        .get_file(&video.clone(), true)
-        .await
-        .context("downloading video")?;
-    let data = data_opt.ok_or_else(|| anyhow!("video bytes missing"))?;
-    Ok((body, mime, data))
-}
-
-async fn send_attachment(
-    room: &Room,
-    body: &str,
-    mime: &Mime,
-    data: Vec<u8>,
-) -> matrix_sdk::Result<matrix_sdk::ruma::api::client::message::send_message_event::v3::Response> {
-    let config = AttachmentConfig::new();
-    room.send_attachment(body, &mime.clone(), data, config)
-        .await
 }

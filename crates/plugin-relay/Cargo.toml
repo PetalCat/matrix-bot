@@ -1,5 +1,5 @@
 [package]
-name = "tools"
+name = "plugin-relay"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,9 +7,12 @@ edition = "2024"
 anyhow.workspace = true
 async-trait.workspace = true
 matrix-sdk.workspace = true
+mime.workspace = true
+plugin-core = { path = "../plugin-core" }
 serde.workspace = true
 serde_yaml.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

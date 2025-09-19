@@ -4,20 +4,19 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
-
-use tools::plugin_trait::Plugin;
+use plugin_core::factory::PluginFactory;
+use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, send_text};
 
 pub struct EchoPlugin;
 
-impl Plugin for EchoPlugin {
-    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+impl PluginFactory for EchoPlugin {
+    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
         if !specs.iter().any(|t| t.id == "echo") {
-            specs.push(ToolSpec {
+            specs.push(PluginSpec {
                 id: "echo".into(),
                 enabled: true,
                 dev_only: None,
-                triggers: ToolTriggers {
+                triggers: PluginTriggers {
                     commands: vec!["!echo".into()],
                     mentions: vec![],
                 },
@@ -26,7 +25,7 @@ impl Plugin for EchoPlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Tool> {
+    fn build(&self) -> Arc<dyn Plugin> {
         Arc::new(EchoTool)
     }
 }
@@ -42,14 +41,14 @@ struct EchoConfig {
 }
 
 #[async_trait]
-impl Tool for EchoTool {
+impl Plugin for EchoTool {
     fn id(&self) -> &'static str {
         "echo"
     }
     fn help(&self) -> &'static str {
         "Echo text back. Config: prefix, uppercase"
     }
-    async fn run(&self, ctx: &ToolContext, args: &str, spec: &ToolSpec) -> Result<()> {
+    async fn run(&self, ctx: &PluginContext, args: &str, spec: &PluginSpec) -> Result<()> {
         let cfg: EchoConfig = serde_yaml::from_value(spec.config.clone()).unwrap_or_default();
         let mut out = args.trim().to_owned();
         if cfg.uppercase {

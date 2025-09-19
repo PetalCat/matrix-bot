@@ -24,20 +24,22 @@ use matrix_sdk::{
 };
 use tracing::{info, warn};
 
-use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text, str_conf, truncate};
-
-use tools::plugin_trait::Plugin;
+use plugin_core::factory::PluginFactory;
+use plugin_core::{
+    Plugin, PluginContext, PluginSpec, PluginTriggers, sanitize_line, send_text, str_config,
+    truncate,
+};
 
 pub struct AiPlugin;
 
-impl Plugin for AiPlugin {
-    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+impl PluginFactory for AiPlugin {
+    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
         if !specs.iter().any(|t| t.id == "ai") {
-            specs.push(ToolSpec {
+            specs.push(PluginSpec {
                 id: "ai".into(),
                 enabled: true,
                 dev_only: Some(true),
-                triggers: ToolTriggers {
+                triggers: PluginTriggers {
                     commands: vec!["!ai".into()],
                     mentions: vec![],
                 },
@@ -46,14 +48,15 @@ impl Plugin for AiPlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Tool> {
+    fn build(&self) -> Arc<dyn Plugin> {
         Arc::new(AiTool)
     }
 }
 
-const DEFAULT_SYSTEM_PROMPT: &str = r"
+const DEFAULT_SYSTEM_PROMPT: &'static str = r"
 You are an AI assistant embedded in a casual group chat between friends.
 Your job is to be another participant in the chat, not an outside narrator.
+Ignore any routing prefixes like !dev.command or @dev.name; they are just delivery hints.
 
 Behavior Rules
 • Keep replies short, friendly, and clear so they fit into casual conversation.
@@ -105,7 +108,7 @@ Here’s the real convo. They tagged you. You have to reply next.
 pub struct AiTool;
 
 #[async_trait]
-impl Tool for AiTool {
+impl Plugin for AiTool {
     fn id(&self) -> &'static str {
         "ai"
     }
@@ -115,7 +118,7 @@ impl Tool for AiTool {
     fn dev_only(&self) -> bool {
         true
     }
-    async fn run(&self, ctx: &ToolContext, args: &str, spec: &ToolSpec) -> Result<()> {
+    async fn run(&self, ctx: &PluginContext, args: &str, spec: &PluginSpec) -> Result<()> {
         #[derive(serde::Deserialize)]
         struct ChoiceMsg {
             content: Option<String>,
@@ -146,13 +149,13 @@ impl Tool for AiTool {
             return send_text(ctx, "Usage: !ai <prompt>").await;
         }
 
-        let api_base = str_conf(spec, "api_base")
+        let api_base = str_config(spec, "api_base")
             .or_else(|| std::env::var("AI_API_BASE").ok())
             .unwrap_or_else(|| "https://api.openai.com".to_owned());
-        let api_path = str_conf(spec, "api_path")
+        let api_path = str_config(spec, "api_path")
             .or_else(|| std::env::var("AI_API_PATH").ok())
             .unwrap_or_else(|| "/v1/chat/completions".to_owned());
-        let model = str_conf(spec, "model")
+        let model = str_config(spec, "model")
             .or_else(|| std::env::var("AI_MODEL").ok())
             .unwrap_or_else(|| "gpt-4o-mini".to_owned());
         // Resolve API key with precedence:
@@ -161,10 +164,10 @@ impl Tool for AiTool {
         // 3) env.AI_API_KEY
         // 4) env.OPENAI_API_KEY
         let mut key_source = String::new();
-        let api_key = if let Some(k) = str_conf(spec, "api_key") {
+        let api_key = if let Some(k) = str_config(spec, "api_key") {
             key_source = "config.api_key".into();
             Some(k)
-        } else if let Some(env_name) = str_conf(spec, "api_key_env") {
+        } else if let Some(env_name) = str_config(spec, "api_key_env") {
             let val = std::env::var(&env_name).ok();
             if val.is_some() {
                 key_source = format!("env.{env_name}");
@@ -218,8 +221,8 @@ Routing prefixes like !dev.command or @dev.name are delivery hints; ignore them 
         }
 
         // Log request metadata (not the full content or secrets)
-        let sys_preview = tools::truncate(&system_prompt, 200);
-        let user_preview = tools::truncate(prompt, 120);
+        let sys_preview = truncate(&system_prompt, 200);
+        let user_preview = truncate(prompt, 120);
         info!(
             model = %model,
             url = %url,
@@ -385,7 +388,7 @@ async fn history_line_from_raw(
         | _ => None,
     }?;
 
-    let sanitized = tools::sanitize_line(body, 400);
+    let sanitized = sanitize_line(body, 400);
     if sanitized.is_empty() {
         return None;
     }

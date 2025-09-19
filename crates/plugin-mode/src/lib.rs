@@ -3,20 +3,19 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
-
-use tools::plugin_trait::Plugin;
+use plugin_core::factory::PluginFactory;
+use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, send_text};
 
 pub struct ModePlugin;
 
-impl Plugin for ModePlugin {
-    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+impl PluginFactory for ModePlugin {
+    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
         if !specs.iter().any(|t| t.id == "mode") {
-            specs.push(ToolSpec {
+            specs.push(PluginSpec {
                 id: "mode".into(),
                 enabled: true,
                 dev_only: None,
-                triggers: ToolTriggers {
+                triggers: PluginTriggers {
                     commands: vec!["!mode".into()],
                     mentions: vec![],
                 },
@@ -25,7 +24,7 @@ impl Plugin for ModePlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Tool> {
+    fn build(&self) -> Arc<dyn Plugin> {
         Arc::new(ModeTool)
     }
 }
@@ -33,14 +32,14 @@ impl Plugin for ModePlugin {
 pub struct ModeTool;
 
 #[async_trait]
-impl Tool for ModeTool {
+impl Plugin for ModeTool {
     fn id(&self) -> &'static str {
         "mode"
     }
     fn help(&self) -> &'static str {
         "Show current mode (dev/prod) and how to target it."
     }
-    async fn run(&self, ctx: &ToolContext, _args: &str, _spec: &ToolSpec) -> Result<()> {
+    async fn run(&self, ctx: &PluginContext, _args: &str, _spec: &PluginSpec) -> Result<()> {
         let mode = if ctx.dev_active { "dev" } else { "prod" };
         let mut lines = vec![format!("mode: {}", mode)];
         if ctx.dev_active {

@@ -3,18 +3,19 @@ use std::{string::ToString, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 
-use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, plugin_trait::Plugin, send_text};
+use plugin_core::factory::PluginFactory;
+use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, send_text};
 
 pub struct DiagnosticsPlugin;
 
-impl Plugin for DiagnosticsPlugin {
-    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+impl PluginFactory for DiagnosticsPlugin {
+    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
         if !specs.iter().any(|t| t.id == "diag") {
-            specs.push(ToolSpec {
+            specs.push(PluginSpec {
                 id: "diag".into(),
                 enabled: true,
                 dev_only: None,
-                triggers: ToolTriggers {
+                triggers: PluginTriggers {
                     commands: vec!["!diag".into()],
                     mentions: vec![],
                 },
@@ -23,7 +24,7 @@ impl Plugin for DiagnosticsPlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Tool> {
+    fn build(&self) -> Arc<dyn Plugin> {
         Arc::new(DiagTool)
     }
 }
@@ -31,14 +32,14 @@ impl Plugin for DiagnosticsPlugin {
 pub struct DiagTool;
 
 #[async_trait]
-impl Tool for DiagTool {
+impl Plugin for DiagTool {
     fn id(&self) -> &'static str {
         "diag"
     }
     fn help(&self) -> &'static str {
         "Show encryption/session diagnostics."
     }
-    async fn run(&self, ctx: &ToolContext, _args: &str, _spec: &ToolSpec) -> Result<()> {
+    async fn run(&self, ctx: &PluginContext, _args: &str, _spec: &PluginSpec) -> Result<()> {
         let user_id = ctx
             .client
             .user_id()

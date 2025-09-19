@@ -3,21 +3,20 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use tools::{Tool, ToolContext, ToolSpec, ToolTriggers, send_text};
-
-use tools::plugin_trait::Plugin;
+use plugin_core::factory::PluginFactory;
+use plugin_core::{Plugin, PluginContext, PluginRegistry, PluginSpec, PluginTriggers, send_text};
 
 pub struct ToolsManagerPlugin;
 
-impl Plugin for ToolsManagerPlugin {
-    fn register_defaults(&self, specs: &mut Vec<ToolSpec>) {
+impl PluginFactory for ToolsManagerPlugin {
+    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
         if !specs.iter().any(|t| t.id == "tools") {
-            specs.push(ToolSpec {
+            specs.push(PluginSpec {
                 id: "tools".to_owned(),
                 enabled: true,
                 dev_only: None,
-                triggers: ToolTriggers {
-                    commands: vec!["!tools".to_owned()],
+                triggers: PluginTriggers {
+                    commands: vec!["!tools".to_owned(), "!plugins".to_owned()],
                     mentions: vec![],
                 },
                 config: serde_yaml::Value::default(),
@@ -25,7 +24,7 @@ impl Plugin for ToolsManagerPlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Tool> {
+    fn build(&self) -> Arc<dyn Plugin> {
         Arc::new(ToolsManager)
     }
 }
@@ -33,23 +32,23 @@ impl Plugin for ToolsManagerPlugin {
 pub struct ToolsManager;
 
 #[async_trait]
-impl Tool for ToolsManager {
+impl Plugin for ToolsManager {
     fn id(&self) -> &'static str {
         "tools"
     }
     fn help(&self) -> &'static str {
-        "Manage tools: !tools list | enable <id> | disable <id>"
+        "Manage plugins: !tools list | enable <id> | disable <id>"
     }
-    async fn run(&self, ctx: &ToolContext, args: &str, _spec: &ToolSpec) -> Result<()> {
-        let registry = &ctx.registry;
+    async fn run(&self, ctx: &PluginContext, args: &str, _spec: &PluginSpec) -> Result<()> {
+        let registry: &PluginRegistry = &ctx.registry;
         let mut parts = args.split_whitespace();
         match parts.next() {
             Some("list") | None => {
-                let mut rows = vec!["tools:".to_owned()];
-                for (id, entry) in registry.by_id.iter() {
-                    let enabled = registry.is_enabled(id);
+                let mut rows = vec!["plugins:".to_owned()];
+                for (id, entry) in registry.entries().await {
+                    let enabled = registry.is_enabled(&id).await;
                     #[allow(clippy::or_fun_call, reason = "const fn")]
-                    let dev_only = entry.spec.dev_only.unwrap_or(entry.tool.dev_only());
+                    let dev_only = entry.spec.dev_only.unwrap_or(entry.plugin.dev_only());
                     let triggers = format!(
                         "cmds=[{}], mentions=[{}]",
                         entry.spec.triggers.commands.join(", "),
@@ -63,21 +62,27 @@ impl Tool for ToolsManager {
             }
             Some("enable") => {
                 if let Some(id) = parts.next() {
-                    registry.state.lock().await.insert(id.to_owned(), true);
-                    send_text(ctx, format!("enabled tool: {id}")).await
+                    registry.set_override(id, true).await;
+                    send_text(ctx, format!("enabled plugin: {id}")).await
                 } else {
-                    send_text(ctx, "Usage: !tools enable <id>").await
+                    send_text(ctx, "Usage: !tools enable <id> (alias: !plugins)").await
                 }
             }
             Some("disable") => {
                 if let Some(id) = parts.next() {
-                    registry.state.lock().await.insert(id.to_owned(), false);
-                    send_text(ctx, format!("disabled tool: {id}")).await
+                    registry.set_override(id, false).await;
+                    send_text(ctx, format!("disabled plugin: {id}")).await
                 } else {
-                    send_text(ctx, "Usage: !tools disable <id>").await
+                    send_text(ctx, "Usage: !tools disable <id> (alias: !plugins)").await
                 }
             }
-            _ => send_text(ctx, "Usage: !tools [list|enable <id>|disable <id>]").await,
+            _ => {
+                send_text(
+                    ctx,
+                    "Usage: !tools [list|enable <id>|disable <id>] (alias: !plugins)",
+                )
+                .await
+            }
         }
     }
 }
