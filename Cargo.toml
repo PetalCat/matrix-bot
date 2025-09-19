@@ -32,3 +32,4 @@ unused_trait_names = "warn"
 wildcard_enum_match_arm = "warn"
 
 too_many_lines = "allow"
+cognitive-complexity = "allow"
