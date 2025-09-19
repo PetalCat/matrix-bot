@@ -1,8 +1,9 @@
 use core::fmt::Write as _;
 use std::{
+    borrow::ToOwned,
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Once},
 };
 
 use anyhow::Result;
@@ -26,23 +27,48 @@ use tracing::{info, warn};
 
 use plugin_core::factory::PluginFactory;
 use plugin_core::{
-    Plugin, PluginContext, PluginSpec, PluginTriggers, sanitize_line, send_text, str_config,
-    truncate,
+    Plugin, PluginContext, PluginSpec, PluginTriggers, RoomMessageMeta, sanitize_line, send_text,
+    str_config, truncate,
 };
 
 pub struct AiPlugin;
 
+static HISTORY_BACKFILL_ONCE: Once = Once::new();
+
 impl PluginFactory for AiPlugin {
     fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
-        if !specs.iter().any(|t| t.id == "ai") {
+        if let Some(spec) = specs.iter_mut().find(|t| t.id == "ai") {
+            if !spec
+                .triggers
+                .commands
+                .iter()
+                .any(|cmd| cmd.eq_ignore_ascii_case("!ai"))
+            {
+                spec.triggers.commands.push("!ai".into());
+            }
+            if let Some(handle) = ai_env_handle() {
+                if !spec
+                    .triggers
+                    .mentions
+                    .iter()
+                    .any(|mention| mention.eq_ignore_ascii_case(&handle))
+                {
+                    spec.triggers.mentions.push(handle);
+                }
+            }
+        } else {
+            let mut triggers = PluginTriggers {
+                commands: vec!["!ai".into()],
+                mentions: Vec::new(),
+            };
+            if let Some(handle) = ai_env_handle() {
+                triggers.mentions.push(handle);
+            }
             specs.push(PluginSpec {
                 id: "ai".into(),
                 enabled: true,
                 dev_only: None,
-                triggers: PluginTriggers {
-                    commands: vec!["!ai".into()],
-                    mentions: vec![],
-                },
+                triggers,
                 config: serde_yaml::Value::default(),
             });
         }
@@ -114,6 +140,53 @@ impl Plugin for AiTool {
     }
     fn help(&self) -> &'static str {
         "Ask the AI: !ai <prompt>"
+    }
+    fn wants_own_messages(&self) -> bool {
+        true
+    }
+
+    async fn on_room_message(
+        &self,
+        ctx: &PluginContext,
+        event: &OriginalSyncRoomMessageEvent,
+        spec: &PluginSpec,
+        meta: &RoomMessageMeta<'_>,
+    ) -> Result<()> {
+        trigger_backfill(ctx, spec);
+
+        let Some(body) = message_body(&event.content.msgtype) else {
+            return Ok(());
+        };
+
+        record_history(ctx, event, body).await;
+
+        if meta.triggered_plugins.contains(self.id()) {
+            return Ok(());
+        }
+
+        let Some(own_id) = ctx.client.user_id() else {
+            return Ok(());
+        };
+        if event.sender == own_id {
+            return Ok(());
+        }
+
+        if body.trim().is_empty() {
+            return Ok(());
+        }
+
+        let body_lc = body.to_lowercase();
+        for handle in fallback_handles(ctx, spec) {
+            if body_lc.contains(&handle) {
+                info!(plugin = %self.id(), handle, "Fallback mention matched; delegating to run()");
+                if let Err(err) = self.run(ctx, body, spec).await {
+                    warn!(error = %err, plugin = %self.id(), "AI fallback run failed");
+                }
+                break;
+            }
+        }
+
+        Ok(())
     }
     async fn run(&self, ctx: &PluginContext, args: &str, spec: &PluginSpec) -> Result<()> {
         #[derive(serde::Deserialize)]
@@ -188,13 +261,7 @@ impl Plugin for AiTool {
         let api_key = api_key.unwrap();
         let url = format!("{}{}", api_base.trim_end_matches('/'), api_path);
 
-        let name = spec
-            .config
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned)
-            .or_else(|| std::env::var("AI_NAME").ok())
-            .unwrap_or_else(|| "Claire".to_owned());
+        let name = ai_name(spec);
 
         let system_prompt_base = spec
             .config
@@ -316,6 +383,97 @@ Routing prefixes like !dev.command or @dev.name are delivery hints; ignore them 
             }
         }
     }
+}
+
+fn ai_env_handle() -> Option<String> {
+    std::env::var("AI_HANDLE").ok().map(|raw| {
+        if raw.starts_with('@') {
+            raw
+        } else {
+            format!("@{raw}")
+        }
+    })
+}
+
+fn ai_name(spec: &PluginSpec) -> String {
+    spec.config
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned)
+        .or_else(|| std::env::var("AI_NAME").ok())
+        .unwrap_or_else(|| "Claire".to_owned())
+}
+
+fn message_body(msgtype: &MessageType) -> Option<&str> {
+    match msgtype {
+        MessageType::Text(inner) => Some(inner.body.as_str()),
+        MessageType::Notice(inner) => Some(inner.body.as_str()),
+        MessageType::Emote(inner) => Some(inner.body.as_str()),
+        _ => None,
+    }
+}
+
+async fn record_history(ctx: &PluginContext, event: &OriginalSyncRoomMessageEvent, body: &str) {
+    let sanitized = sanitize_line(body, 400);
+    if sanitized.is_empty() {
+        return;
+    }
+
+    let sender_name = match ctx.room.get_member(&event.sender).await {
+        Ok(Some(member)) => member
+            .display_name()
+            .map_or_else(|| event.sender.localpart().to_owned(), ToOwned::to_owned),
+        _ => event.sender.localpart().to_owned(),
+    };
+    let timestamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned());
+    let line = format!("[{timestamp}] {sender_name}:{sanitized}");
+    let room_id = ctx.room.room_id().to_owned();
+    append_history_line(ctx.history_dir.as_ref().as_path(), &room_id, &line);
+}
+
+fn fallback_handles(ctx: &PluginContext, spec: &PluginSpec) -> Vec<String> {
+    let mut handles: Vec<String> = Vec::new();
+    if let Some(handle) = ai_env_handle() {
+        handles.push(handle.to_lowercase());
+    }
+
+    let name = ai_name(spec).to_lowercase();
+    if ctx.dev_active {
+        if let Some(dev_id) = ctx.dev_id.as_deref() {
+            handles.push(format!("@{}.{}", dev_id.to_lowercase(), name));
+        }
+    } else {
+        handles.push(format!("@{}", name));
+    }
+
+    handles.sort();
+    handles.dedup();
+    handles
+}
+
+fn trigger_backfill(ctx: &PluginContext, spec: &PluginSpec) {
+    let enable = spec
+        .config
+        .get("history_backfill_on_start")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    if !enable {
+        return;
+    }
+    let limit = spec
+        .config
+        .get("history_backfill_lines")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50);
+    let client = ctx.client.clone();
+    let history_dir = ctx.history_dir.as_ref().clone();
+    HISTORY_BACKFILL_ONCE.call_once(|| {
+        tokio::spawn(async move {
+            backfill_all(client, history_dir, limit).await;
+        });
+    });
 }
 
 fn history_path(history_dir: &Path, room_id: &OwnedRoomId) -> PathBuf {

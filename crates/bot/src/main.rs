@@ -1,12 +1,7 @@
 mod plugins;
 
 use core::time::Duration;
-use std::{
-    fs,
-    io::IsTerminal as _,
-    path::PathBuf,
-    sync::{Arc, Once},
-};
+use std::{collections::HashSet, fs, io::IsTerminal as _, path::PathBuf, sync::Arc};
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
@@ -29,12 +24,9 @@ use matrix_sdk::{
         },
     },
 };
-use plugin_core::{PluginContext, PluginSpec, sanitize_line, truncate};
+use plugin_core::{PluginContext, PluginSpec, RoomMessageMeta, truncate};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
-
-// TODO: OnceLock
-static AI_BACKFILL_ONCE: Once = Once::new();
 
 #[derive(Parser, Debug)]
 #[command(
@@ -227,14 +219,7 @@ async fn main() -> Result<()> {
     // Loud banner so mode is obvious at startup
     print_mode_banner(dev_active, dev_id.as_deref());
     // Build plugin registry
-    let ai_handle_env = std::env::var("AI_HANDLE").ok().map(|raw| {
-        if raw.starts_with('@') {
-            raw
-        } else {
-            format!("@{raw}")
-        }
-    });
-    let registry = plugins::build_registry(&config, ai_handle_env).await;
+    let registry = plugins::build_registry(&config).await;
     let history_dir = Arc::new(args.store.join("history"));
     // Log registered plugin commands/mentions for visibility
     let entries_for_log = registry.entries().await;
@@ -291,36 +276,6 @@ async fn main() -> Result<()> {
         // Identify own user; do not early-return yet so we can record history even for own messages
         let Some(own_id) = client.user_id() else { return; };
 
-        // After the first synced event, fire one-time AI history backfill so prev_batch is available
-        let client_for_backfill = client.clone();
-        let history_dir_for_backfill = Arc::clone(&history_dir_for_handler);
-        let registry_for_backfill = Arc::clone(&registry_for_handler);
-        AI_BACKFILL_ONCE.call_once(move || {
-            let registry = Arc::clone(&registry_for_backfill);
-            let history_dir = (*history_dir_for_backfill).clone();
-            tokio::spawn(async move {
-                let (enable, limit) = registry
-                    .entry("ai")
-                    .await
-                    .map(|entry| {
-                        let cfg = &entry.spec.config;
-                        let enable = cfg
-                            .get("history_backfill_on_start")
-                            .and_then(serde_yaml::Value::as_bool)
-                            .unwrap_or(true);
-                        let limit = cfg
-                            .get("history_backfill_lines")
-                            .and_then(serde_yaml::Value::as_u64)
-                            .unwrap_or(50);
-                        (enable, limit)
-                    })
-                    .unwrap_or((true, 50));
-                if enable {
-                    plugin_ai::backfill_all(client_for_backfill, history_dir, limit).await;
-                }
-            });
-        });
-
         // Log incoming message details for diagnostics
         let msg_kind = match &ev.content.msgtype {
             MessageType::Text(_) => "text",
@@ -346,24 +301,10 @@ async fn main() -> Result<()> {
             MessageType::Notice(n) => Some(n.body.as_str()),
             MessageType::Audio(_) | MessageType::Emote(_) | MessageType::File(_) | MessageType::Image(_) | MessageType::Location(_) | MessageType::ServerNotice(_) | MessageType::Video(_) | MessageType::VerificationRequest(_) | _ => None,
         };
-        // Record this message into AI history as "[ts] Name:message" before handling
-        if let Some(text_body) = body_opt {
-            let sender_name = match room.get_member(&ev.sender).await {
-                Ok(Some(m)) => m
-                    .display_name().map_or_else(|| ev.sender.localpart().to_owned(), ToOwned::to_owned),
-                _ => ev.sender.localpart().to_owned(),
-            };
-            let ts = time::OffsetDateTime::now_utc();
-            let ts_str = ts
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default();
-            let msg = sanitize_line(text_body, 400);
-            let line = format!("[{ts_str}] {sender_name}:{msg}");
-            plugin_ai::append_history_line(&history_dir_for_handler, &room.room_id().to_owned(), &line);
-        }
+        let is_self = ev.sender == own_id;
+        let mut triggered_plugins: HashSet<String> = HashSet::new();
 
-        // For own messages, stop after recording history; do not trigger plugins/relay
-        if ev.sender == own_id { return; }
+        if !is_self {
         if let Some(body) = body_opt.map(str::trim) {
             let dev_id_opt = dev_id_for_handler.as_deref();
             // !command
@@ -411,6 +352,8 @@ async fn main() -> Result<()> {
                             };
                             if let Err(e) = entry.plugin.run(&ctx, &args_clean, &entry.spec).await {
                                 warn!(error = %e, plugin = %plugin_id, "Plugin failed");
+                            } else {
+                                triggered_plugins.insert(plugin_id.clone());
                             }
                         }
                     }
@@ -418,7 +361,6 @@ async fn main() -> Result<()> {
             }
             // @mention anywhere in the message (case-insensitive; tolerant of trailing punctuation)
             {
-                let mut mention_handled = false;
                 let mut search_from = 0usize;
                 for token_raw in body.split_whitespace() {
                     // Find the token position in the original string starting from current cursor
@@ -474,77 +416,22 @@ async fn main() -> Result<()> {
                                 };
                                 if let Err(e) = entry.plugin.run(&ctx, args_source, &entry.spec).await {
                                     warn!(error = %e, plugin = %plugin_id, "Plugin failed");
+                                } else {
+                                    triggered_plugins.insert(plugin_id.clone());
                                 }
                             }
                         }
-                        mention_handled = true;
                         break; // handle only first matched mention
-                    }
-                }
-                // Fallback: only if nothing handled above
-                if !mention_handled {
-                    let fallback_name = std::env::var("AI_NAME").unwrap_or_else(|_| "Claire".to_owned());
-                    let body_lc = body.to_lowercase();
-                    let fallback_route = if dev_active {
-                        dev_id_opt.map(|id| {
-                            let name = fallback_name.to_lowercase();
-                            (format!("@{id}.{name}"), DevRouting::Dev)
-                        })
-                    } else {
-                        Some((format!("@{}", fallback_name.to_lowercase()), DevRouting::Prod))
-                    };
-                    if let Some((handle, routing)) = fallback_route {
-                        let handle_lc = handle.to_lowercase();
-                        if body_lc.contains(&handle_lc) {
-                            if let Some(entry) = registry_for_handler.entry("ai").await {
-                                // Use the FULL body as prompt for fallback as well
-                                let args_source = body;
-                                info!(plugin = %"ai", route = ?routing, dev_active = dev_active, "Fallback mention routing by contains");
-                                match routing {
-                                    DevRouting::Dev if !dev_active => {
-                                        info!(plugin = %"ai", "Ignoring dev mention in prod mode");
-                                    }
-                                    DevRouting::Prod if dev_active => {
-                                        info!(plugin = %"ai", "Ignoring prod mention in dev mode");
-                                    }
-                                    DevRouting::OtherDev => {
-                                        info!(plugin = %"ai", "Ignoring mention targeted at different dev id");
-                                    }
-                                    _ if entry
-                                        .spec
-                                        .dev_only
-                                        .unwrap_or_else(|| entry.plugin.dev_only())
-                                        && !dev_active =>
-                                    {
-                                        info!(plugin = %"ai", "Ignoring dev-only plugin in prod mode");
-                                    }
-                                    _ if !registry_for_handler.is_enabled("ai").await => {
-                                        info!(plugin = %"ai", "Plugin disabled");
-                                    }
-                                    _ => {
-                                        let ctx = PluginContext {
-                                            client: client.clone(),
-                                            room: room.clone(),
-                                            dev_active,
-                                            dev_id: dev_id_for_handler.clone(),
-                                            registry: Arc::clone(&registry_for_handler),
-                                            history_dir: Arc::clone(&history_dir_for_handler),
-                                        };
-                                        if let Err(e) = entry.plugin.run(&ctx, args_source, &entry.spec).await {
-                                            warn!(error = %e, plugin = %"ai", "Plugin failed");
-                                        }
-                                    }
-                                }
-                            } else {
-                                info!("Fallback mention found but 'ai' plugin not registered");
-                            }
-                        }
                     }
                 }
             }
         }
+        }
 
-        // (history already recorded above)
+        let meta = RoomMessageMeta {
+            body: body_opt,
+            triggered_plugins: &triggered_plugins,
+        };
 
         // Passive plugins (e.g., relay)
         let passive_entries = registry_for_handler.entries().await;
@@ -562,6 +449,9 @@ async fn main() -> Result<()> {
                 if !entry.plugin.handles_room_messages() {
                     continue;
                 }
+                if is_self && !entry.plugin.wants_own_messages() {
+                    continue;
+                }
                 if entry
                     .spec
                     .dev_only
@@ -575,7 +465,7 @@ async fn main() -> Result<()> {
                 }
                 if let Err(e) = entry
                     .plugin
-                    .on_room_message(&base_ctx, &ev, &entry.spec)
+                    .on_room_message(&base_ctx, &ev, &entry.spec, &meta)
                     .await
                 {
                     warn!(error = %e, plugin = %plugin_id, "Plugin on_room_message failed");

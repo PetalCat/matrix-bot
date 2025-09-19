@@ -21,7 +21,7 @@ use matrix_sdk::{
 };
 use mime::Mime;
 use plugin_core::factory::PluginFactory;
-use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, truncate};
+use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, RoomMessageMeta, truncate};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -85,6 +85,7 @@ impl Plugin for Relay {
         ctx: &PluginContext,
         event: &OriginalSyncRoomMessageEvent,
         spec: &PluginSpec,
+        _meta: &RoomMessageMeta<'_>,
     ) -> Result<()> {
         if ctx.dev_active {
             info!(room_id = %ctx.room.room_id(), "Dev mode active: relay disabled");
