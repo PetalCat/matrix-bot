@@ -38,7 +38,7 @@ impl PluginFactory for AiPlugin {
             specs.push(PluginSpec {
                 id: "ai".into(),
                 enabled: true,
-                dev_only: Some(true),
+                dev_only: None,
                 triggers: PluginTriggers {
                     commands: vec!["!ai".into()],
                     mentions: vec![],
@@ -113,10 +113,7 @@ impl Plugin for AiTool {
         "ai"
     }
     fn help(&self) -> &'static str {
-        "Ask the AI: !ai <prompt> (dev only)"
-    }
-    fn dev_only(&self) -> bool {
-        true
+        "Ask the AI: !ai <prompt>"
     }
     async fn run(&self, ctx: &PluginContext, args: &str, spec: &PluginSpec) -> Result<()> {
         #[derive(serde::Deserialize)]
