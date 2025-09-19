@@ -4,6 +4,27 @@ use tokio::sync::Mutex;
 use tools::{Tool, ToolEntry, ToolSpec, ToolsRegistry, plugin_trait::Plugin};
 use tracing::warn;
 
+struct PluginRegistry {
+    plugins: HashMap<String, Box<dyn Plugin>>,
+}
+
+impl PluginRegistry {
+    fn new() -> Self {
+        Self {
+            plugins: HashMap::new(),
+        }
+    }
+
+    fn with_plugin<P: Plugin + 'static>(mut self, name: impl Into<String>, plugin: P) -> Self {
+        self.plugins.insert(name.into(), Box::new(plugin));
+        self
+    }
+
+    fn get(&self, name: &str) -> Option<&dyn Plugin> {
+        self.plugins.get(name).map(|p| &**p)
+    }
+}
+
 pub fn build_registry(
     config_tools: Option<Vec<ToolSpec>>,
     env_ai_handle: Option<String>,
@@ -12,28 +33,24 @@ pub fn build_registry(
     let mut by_command: HashMap<String, String> = HashMap::new();
     let mut by_mention: HashMap<String, String> = HashMap::new();
 
+    let registry = PluginRegistry::new()
+        .with_plugin("ping", plugin_ping::PingPlugin)
+        .with_plugin("mode", plugin_mode::ModePlugin)
+        .with_plugin("diag", plugin_diagnostics::DiagnosticsPlugin)
+        .with_plugin("tools", plugin_tools_manager::ToolsManagerPlugin)
+        .with_plugin("ai", plugin_ai::AiPlugin)
+        .with_plugin("echo", plugin_echo::EchoPlugin);
+
     // defaults from each tool module
     let mut specs = config_tools.unwrap_or_default();
-    let plugins: HashMap<&'static str, Box<dyn Plugin>> = HashMap::from([
-        ("ping", Box::new(plugin_ping::PingPlugin) as Box<dyn Plugin>),
-        ("mode", Box::new(plugin_mode::ModePlugin) as Box<dyn Plugin>),
-        (
-            "diag",
-            Box::new(plugin_diagnostics::DiagnosticsPlugin) as Box<dyn Plugin>,
-        ),
-        (
-            "tools",
-            Box::new(plugin_tools_manager::ToolsManagerPlugin) as Box<dyn Plugin>,
-        ),
-        ("ai", Box::new(plugin_ai::AiPlugin) as Box<dyn Plugin>),
-        ("echo", Box::new(plugin_echo::EchoPlugin) as Box<dyn Plugin>),
-    ]);
-    for plugin in plugins.values() {
+
+    for plugin in registry.plugins.values() {
         plugin.register_defaults(&mut specs);
     }
     if let Some(handle) = env_ai_handle {
         append_mention(&mut specs, "ai", &handle);
     }
+
     // If ai has no mention trigger yet, derive one from name (config or AI_NAME) or default to @Claire
     if !specs
         .iter()
@@ -51,7 +68,7 @@ pub fn build_registry(
     }
 
     for mut spec in specs {
-        let tool: Arc<dyn Tool> = if let Some(plugin) = plugins.get(spec.id.as_str()) {
+        let tool: Arc<dyn Tool> = if let Some(plugin) = registry.get(spec.id.as_str()) {
             plugin.build()
         } else {
             warn!("Unknown tool ID: {}", spec.id);
