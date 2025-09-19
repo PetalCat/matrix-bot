@@ -9,7 +9,6 @@ async-trait.workspace = true
 matrix-sdk.workspace = true
 reqwest.workspace = true
 serde.workspace = true
-serde_derive.workspace = true
 serde_yaml.workspace = true
 time.workspace = true
 tracing.workspace = true
