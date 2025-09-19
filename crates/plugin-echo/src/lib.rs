@@ -25,7 +25,7 @@ impl PluginFactory for EchoPlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Plugin> {
+    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
         Arc::new(EchoTool)
     }
 }

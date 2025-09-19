@@ -86,7 +86,7 @@ const fn enabled_true() -> bool {
 #[derive(Clone)]
 pub struct PluginEntry {
     pub spec: PluginSpec,
-    pub plugin: Arc<dyn Plugin>,
+    pub plugin: Arc<dyn Plugin + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -103,11 +103,16 @@ pub struct PluginRegistry {
 }
 
 impl PluginRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub async fn register(&self, spec: PluginSpec, plugin: Arc<dyn Plugin>) -> Option<PluginEntry> {
+    pub async fn register(
+        &self,
+        spec: PluginSpec,
+        plugin: Arc<dyn Plugin + Send + Sync>,
+    ) -> Option<PluginEntry> {
         let mut inner = self.inner.write().await;
         let id = spec.id.clone();
         let previous = inner.by_id.insert(
@@ -181,11 +186,7 @@ impl PluginRegistry {
     #[must_use]
     pub async fn is_enabled(&self, id: &str) -> bool {
         let inner = self.inner.read().await;
-        let default = inner
-            .by_id
-            .get(id)
-            .map(|entry| entry.spec.enabled)
-            .unwrap_or(false);
+        let default = inner.by_id.get(id).is_some_and(|entry| entry.spec.enabled);
         inner.overrides.get(id).copied().unwrap_or(default)
     }
 }
@@ -236,8 +237,18 @@ fn decorate_dev(text: &str, dev_active: bool) -> String {
     }
 }
 
+/// Send a plain-text message to the current room.
+///
+/// The message text will be decorated with a development mode banner when
+/// `PluginContext.dev_active` is true.
+///
+/// # Errors
+///
+/// Returns an error if sending the message fails. The underlying error is
+/// propagated from the matrix-sdk send operation.
 pub async fn send_text(ctx: &PluginContext, text: impl Into<String>) -> Result<()> {
-    let content = RoomMessageEventContent::text_plain(decorate_dev(&text.into(), ctx.dev_active));
+    let text = text.into();
+    let content = RoomMessageEventContent::text_plain(decorate_dev(&text, ctx.dev_active));
     ctx.room.send(content).await?;
     Ok(())
 }

@@ -22,7 +22,7 @@ impl PluginFactory for PingPlugin {
         });
     }
 
-    fn build(&self) -> Arc<dyn Plugin> {
+    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
         Arc::new(Ping)
     }
 }

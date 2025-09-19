@@ -24,7 +24,7 @@ impl PluginFactory for ModePlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Plugin> {
+    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
         Arc::new(ModeTool)
     }
 }

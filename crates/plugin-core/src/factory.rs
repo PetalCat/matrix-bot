@@ -20,5 +20,5 @@ pub trait PluginFactory {
     ///
     /// An `Arc` containing the plugin instance.
     #[must_use]
-    fn build(&self) -> Arc<dyn Plugin>;
+    fn build(&self) -> Arc<dyn Plugin + Send + Sync>;
 }

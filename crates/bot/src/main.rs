@@ -275,7 +275,6 @@ async fn main() -> Result<()> {
     client.add_event_handler(async move |ev: OriginalSyncRoomMessageEvent, room: Room, client: Client| {
         // Identify own user; do not early-return yet so we can record history even for own messages
         let Some(own_id) = client.user_id() else { return; };
-
         // Log incoming message details for diagnostics
         let msg_kind = match &ev.content.msgtype {
             MessageType::Text(_) => "text",
@@ -304,8 +303,7 @@ async fn main() -> Result<()> {
         let is_self = ev.sender == own_id;
         let mut triggered_plugins: HashSet<String> = HashSet::new();
 
-        if !is_self {
-        if let Some(body) = body_opt.map(str::trim) {
+        if !is_self && let Some(body) = body_opt.map(str::trim) {
             let dev_id_opt = dev_id_for_handler.as_deref();
             // !command
             if body.starts_with('!') {
@@ -341,7 +339,7 @@ async fn main() -> Result<()> {
                         _ if !registry_for_handler.is_enabled(&plugin_id).await => {
                             info!(plugin = %plugin_id, "Plugin disabled");
                         }
-                        _ => {
+                        DevRouting::Prod | DevRouting::Dev => {
                             let ctx = PluginContext {
                                 client: client.clone(),
                                 room: room.clone(),
@@ -405,7 +403,7 @@ async fn main() -> Result<()> {
                             _ if !registry_for_handler.is_enabled(&plugin_id).await => {
                                 info!(plugin = %plugin_id, "Plugin disabled");
                             }
-                            _ => {
+                            DevRouting::Prod | DevRouting::Dev => {
                                 let ctx = PluginContext {
                                     client: client.clone(),
                                     room: room.clone(),
@@ -425,7 +423,6 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-        }
         }
 
         let meta = RoomMessageMeta {
@@ -548,22 +545,20 @@ fn load_config(path: &PathBuf) -> Result<BotConfig> {
 fn print_mode_banner(dev_active: bool, dev_id: Option<&str>) {
     let is_tty = std::io::stdout().is_terminal();
     let (title, sub, color) = if dev_active {
-        let hint = if let Some(id) = dev_id {
-            format!("Send !{id}.command targets this instance")
-        } else {
-            "Send !dev.command targets this instance".to_owned()
-        };
+        let hint = dev_id.map_or_else(
+            || "Send !dev.command targets this instance".to_owned(),
+            |id| format!("Send !{id}.command targets this instance"),
+        );
         (
             "DEVELOPMENT MODE ACTIVE",
             hint,
             "\x1b[1;33m", // bold yellow
         )
     } else {
-        let hint = if let Some(id) = dev_id {
-            format!("Relaying enabled — commands without !{id}. prefix")
-        } else {
-            "Relaying is enabled — commands without a dev prefix".to_owned()
-        };
+        let hint = dev_id.map_or_else(
+            || "Relaying is enabled — commands without a dev prefix".to_owned(),
+            |id| format!("Relaying enabled — commands without !{id}. prefix"),
+        );
         (
             "PRODUCTION MODE",
             hint,
@@ -690,35 +685,35 @@ enum DevRouting {
 }
 
 fn classify_command_token(cmd: &str, dev_id: Option<&str>) -> (String, DevRouting) {
-    if let Some(stripped) = cmd.strip_prefix('!') {
-        if let Some((dev_tag, remainder)) = stripped.split_once('.') {
-            if remainder.is_empty() {
-                return (cmd.to_owned(), DevRouting::OtherDev);
-            }
-            let normalized = format!("!{remainder}");
-            let routing = match dev_id {
-                Some(expected) if expected.eq_ignore_ascii_case(dev_tag) => DevRouting::Dev,
-                _ => DevRouting::OtherDev,
-            };
-            return (normalized, routing);
+    if let Some(stripped) = cmd.strip_prefix('!')
+        && let Some((dev_tag, remainder)) = stripped.split_once('.')
+    {
+        if remainder.is_empty() {
+            return (cmd.to_owned(), DevRouting::OtherDev);
         }
+        let normalized = format!("!{remainder}");
+        let routing = match dev_id {
+            Some(expected) if expected.eq_ignore_ascii_case(dev_tag) => DevRouting::Dev,
+            _ => DevRouting::OtherDev,
+        };
+        return (normalized, routing);
     }
     (cmd.to_owned(), DevRouting::Prod)
 }
 
 fn classify_mention_token(token: &str, dev_id: Option<&str>) -> (String, DevRouting) {
-    if let Some(stripped) = token.strip_prefix('@') {
-        if let Some((dev_tag, remainder)) = stripped.split_once('.') {
-            if remainder.is_empty() {
-                return (token.to_owned(), DevRouting::OtherDev);
-            }
-            let normalized = format!("@{remainder}");
-            let routing = match dev_id {
-                Some(expected) if expected.eq_ignore_ascii_case(dev_tag) => DevRouting::Dev,
-                _ => DevRouting::OtherDev,
-            };
-            return (normalized, routing);
+    if let Some(stripped) = token.strip_prefix('@')
+        && let Some((dev_tag, remainder)) = stripped.split_once('.')
+    {
+        if remainder.is_empty() {
+            return (token.to_owned(), DevRouting::OtherDev);
         }
+        let normalized = format!("@{remainder}");
+        let routing = match dev_id {
+            Some(expected) if expected.eq_ignore_ascii_case(dev_tag) => DevRouting::Dev,
+            _ => DevRouting::OtherDev,
+        };
+        return (normalized, routing);
     }
     (token.to_owned(), DevRouting::Prod)
 }

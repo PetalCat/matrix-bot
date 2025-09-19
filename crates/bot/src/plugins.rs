@@ -6,7 +6,7 @@ use plugin_relay::{RelayConfig, RelayPlugin};
 use tracing::warn;
 
 struct FactoryRegistry {
-    factories: HashMap<String, Box<dyn PluginFactory>>,
+    factories: HashMap<String, Box<dyn PluginFactory + Send + Sync>>,
 }
 
 impl FactoryRegistry {
@@ -16,7 +16,7 @@ impl FactoryRegistry {
         }
     }
 
-    fn with_factory<F: PluginFactory + 'static>(
+    fn with_factory<F: PluginFactory + Send + Sync + 'static>(
         mut self,
         name: impl Into<String>,
         factory: F,
@@ -25,7 +25,7 @@ impl FactoryRegistry {
         self
     }
 
-    fn get(&self, name: &str) -> Option<&dyn PluginFactory> {
+    fn get(&self, name: &str) -> Option<&(dyn PluginFactory + Send + Sync)> {
         self.factories.get(name).map(|f| &**f)
     }
 }

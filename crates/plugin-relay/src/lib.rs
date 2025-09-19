@@ -2,9 +2,10 @@ mod relay_config;
 
 pub use relay_config::{RelayCluster, RelayConfig};
 
+use core::fmt::Write as _;
 use std::{borrow::ToOwned, collections::HashMap, sync::Arc};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use async_trait::async_trait;
 use matrix_sdk::{
     Client,
@@ -40,7 +41,7 @@ impl PluginFactory for RelayPlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Plugin> {
+    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
         Arc::new(Relay::default())
     }
 }
@@ -124,13 +125,14 @@ impl Plugin for Relay {
                 match send_res {
                     Ok(_) => {
                         info!(from = %source_id, to = %target_id, sender = %event.sender, "Relayed message");
-                        if formatted_text.is_none() && opts.caption_media {
-                            if let Some(kind) = media_kind(&event.content.msgtype) {
-                                let caption = format!("{display_name_bold}: sent a {kind}");
-                                let _ = room_handle
-                                    .send(RoomMessageEventContent::text_plain(caption))
-                                    .await;
-                            }
+                        if formatted_text.is_none()
+                            && opts.caption_media
+                            && let Some(kind) = media_kind(&event.content.msgtype)
+                        {
+                            let caption = format!("{display_name_bold}: sent a {kind}");
+                            let _ = room_handle
+                                .send(RoomMessageEventContent::text_plain(caption))
+                                .await;
                         }
                     }
                     Err(e) => warn!(
@@ -155,13 +157,15 @@ impl Relay {
         client: &Client,
         spec: &PluginSpec,
     ) -> Result<Option<Arc<RelayPlan>>> {
-        if let Some(plan) = self.plan.read().await.clone() {
+        let value = self.plan.read().await.clone();
+        if let Some(plan) = value {
             return Ok(Some(plan));
         }
         let mut guard = self.plan.write().await;
         if let Some(plan) = guard.clone() {
             return Ok(Some(plan));
         }
+
         let config_value = spec.config.clone();
         if config_value.is_null() {
             return Ok(None);
@@ -173,7 +177,9 @@ impl Relay {
         }
         let plan = resolve_relay_map(client, &cfg).await?;
         let plan = Arc::new(plan);
-        *guard = Some(plan.clone());
+        *guard = Some(Arc::clone(&plan));
+        drop(guard);
+
         Ok(Some(plan))
     }
 }
@@ -190,16 +196,17 @@ async fn resolve_relay_map(client: &Client, cfg: &RelayConfig) -> Result<RelayPl
                 continue;
             }
             if room_ref.starts_with('#') {
-                match RoomAliasId::parse(room_ref) {
-                    Ok(alias) => match client.resolve_room_alias(&alias).await {
+                if let Ok(alias) = RoomAliasId::parse(room_ref) {
+                    match client.resolve_room_alias(&alias).await {
                         Ok(resp) => {
                             resolved.push(resp.room_id.clone());
                         }
                         Err(e) => {
                             warn!(alias = %room_ref, error = %e, "Failed to resolve room alias; skipping");
                         }
-                    },
-                    Err(_) => warn!(alias = %room_ref, "Invalid room alias; skipping"),
+                    }
+                } else {
+                    warn!(alias = %room_ref, "Invalid room alias; skipping");
                 }
             } else {
                 warn!(room = %room_ref, "Invalid room reference (expect !room_id or #alias); skipping");
@@ -263,30 +270,37 @@ fn format_text_message(msg: &MessageType, display_name_bold: &str) -> Option<Str
     match msg {
         MessageType::Text(t) => {
             let (quoted, main) = split_reply_fallback(&t.body);
-            Some(format_output(&quoted, display_name_bold, main.trim(), ""))
+            Some(format_output(quoted, display_name_bold, main.trim(), ""))
         }
         MessageType::Notice(n) => {
             let (quoted, main) = split_reply_fallback(&n.body);
-            Some(format_output(&quoted, display_name_bold, main.trim(), ""))
+            Some(format_output(quoted, display_name_bold, main.trim(), ""))
         }
         MessageType::Emote(e) => {
             let (quoted, main) = split_reply_fallback(&e.body);
-            Some(format_output(&quoted, display_name_bold, main.trim(), "* "))
+            Some(format_output(quoted, display_name_bold, main.trim(), "* "))
         }
-        _ => None,
+        MessageType::Audio(_)
+        | MessageType::File(_)
+        | MessageType::Image(_)
+        | MessageType::Location(_)
+        | MessageType::ServerNotice(_)
+        | MessageType::Video(_)
+        | MessageType::VerificationRequest(_)
+        | _ => None,
     }
 }
 
 fn format_output(
-    quoted: &Option<String>,
+    quoted: Option<String>,
     display_name_bold: &str,
     main: &str,
     prefix: &str,
 ) -> String {
     let mut out = String::new();
     if let Some(q) = quoted {
-        let snippet = truncate(q, 300);
-        out.push_str(&format!("↪ {snippet}\n"));
+        let snippet = truncate(q.as_str(), 300);
+        _ = writeln!(&mut out, "↪ {snippet}");
     }
     out.push_str(display_name_bold);
     out.push_str(": ");
@@ -355,17 +369,29 @@ async fn forward_media(
                 room.send(event.content.clone()).await
             }
         }
-        _ => room.send(event.content.clone()).await,
+        MessageType::Emote(_)
+        | MessageType::Location(_)
+        | MessageType::Notice(_)
+        | MessageType::ServerNotice(_)
+        | MessageType::Text(_)
+        | MessageType::VerificationRequest(_)
+        | _ => room.send(event.content.clone()).await,
     }
 }
 
-fn media_kind(msg: &MessageType) -> Option<&'static str> {
+const fn media_kind(msg: &MessageType) -> Option<&'static str> {
     match msg {
         MessageType::Image(_) => Some("image"),
         MessageType::File(_) => Some("file"),
         MessageType::Audio(_) => Some("audio"),
         MessageType::Video(_) => Some("video"),
-        _ => None,
+        MessageType::Emote(_)
+        | MessageType::Location(_)
+        | MessageType::Notice(_)
+        | MessageType::ServerNotice(_)
+        | MessageType::Text(_)
+        | MessageType::VerificationRequest(_)
+        | _ => None,
     }
 }
 

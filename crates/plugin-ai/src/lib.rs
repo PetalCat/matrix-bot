@@ -46,15 +46,14 @@ impl PluginFactory for AiPlugin {
             {
                 spec.triggers.commands.push("!ai".into());
             }
-            if let Some(handle) = ai_env_handle() {
-                if !spec
+            if let Some(handle) = ai_env_handle()
+                && !spec
                     .triggers
                     .mentions
                     .iter()
                     .any(|mention| mention.eq_ignore_ascii_case(&handle))
-                {
-                    spec.triggers.mentions.push(handle);
-                }
+            {
+                spec.triggers.mentions.push(handle);
             }
         } else {
             let mut triggers = PluginTriggers {
@@ -74,12 +73,12 @@ impl PluginFactory for AiPlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Plugin> {
+    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
         Arc::new(AiTool)
     }
 }
 
-const DEFAULT_SYSTEM_PROMPT: &'static str = r"
+const DEFAULT_SYSTEM_PROMPT: &str = r"
 You are an AI assistant embedded in a casual group chat between friends.
 Your job is to be another participant in the chat, not an outside narrator.
 Ignore any routing prefixes like !dev.command or @dev.name; they are just delivery hints.
@@ -358,11 +357,10 @@ Routing prefixes like !dev.command or @dev.name are delivery hints; ignore them 
                             ""
                         };
                         let prefix = if ctx.dev_active {
-                            if let Some(dev_id) = ctx.dev_id.as_deref() {
-                                format!("@{dev_id}.{name}:")
-                            } else {
-                                format!("@{name}:")
-                            }
+                            ctx.dev_id.as_deref().map_or_else(
+                                || format!("@{name}:"),
+                                |dev_id| format!("@{dev_id}.{name}:"),
+                            )
                         } else {
                             format!("@{name}:")
                         };
@@ -404,12 +402,19 @@ fn ai_name(spec: &PluginSpec) -> String {
         .unwrap_or_else(|| "Claire".to_owned())
 }
 
-fn message_body(msgtype: &MessageType) -> Option<&str> {
+const fn message_body(msgtype: &MessageType) -> Option<&str> {
     match msgtype {
         MessageType::Text(inner) => Some(inner.body.as_str()),
         MessageType::Notice(inner) => Some(inner.body.as_str()),
         MessageType::Emote(inner) => Some(inner.body.as_str()),
-        _ => None,
+        MessageType::Audio(_)
+        | MessageType::File(_)
+        | MessageType::Image(_)
+        | MessageType::Location(_)
+        | MessageType::ServerNotice(_)
+        | MessageType::Video(_)
+        | MessageType::VerificationRequest(_)
+        | _ => None,
     }
 }
 
@@ -445,7 +450,7 @@ fn fallback_handles(ctx: &PluginContext, spec: &PluginSpec) -> Vec<String> {
             handles.push(format!("@{}.{}", dev_id.to_lowercase(), name));
         }
     } else {
-        handles.push(format!("@{}", name));
+        handles.push(format!("@{name}"));
     }
 
     handles.sort();
@@ -457,7 +462,7 @@ fn trigger_backfill(ctx: &PluginContext, spec: &PluginSpec) {
     let enable = spec
         .config
         .get("history_backfill_on_start")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_yaml::Value::as_bool)
         .unwrap_or(true);
     if !enable {
         return;
@@ -465,7 +470,7 @@ fn trigger_backfill(ctx: &PluginContext, spec: &PluginSpec) {
     let limit = spec
         .config
         .get("history_backfill_lines")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_yaml::Value::as_u64)
         .unwrap_or(50);
     let client = ctx.client.clone();
     let history_dir = ctx.history_dir.as_ref().clone();

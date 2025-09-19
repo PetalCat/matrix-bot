@@ -24,7 +24,7 @@ impl PluginFactory for ToolsManagerPlugin {
         }
     }
 
-    fn build(&self) -> Arc<dyn Plugin> {
+    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
         Arc::new(ToolsManager)
     }
 }
