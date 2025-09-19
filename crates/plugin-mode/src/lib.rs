@@ -44,10 +44,25 @@ impl Tool for ModeTool {
         let mode = if ctx.dev_active { "dev" } else { "prod" };
         let mut lines = vec![format!("mode: {}", mode)];
         if ctx.dev_active {
-            lines.push("this instance handles commands that include -d".to_owned());
-            lines.push("example: !diag -d".to_owned());
+            if let Some(dev_id) = ctx.dev_id.as_deref() {
+                lines.push(format!(
+                    "this instance handles commands tagged as !{dev_id}.<command>"
+                ));
+                lines.push(format!("example: !{dev_id}.diag"));
+                lines.push(format!("mentions must use @{dev_id}.<name>"));
+            } else {
+                lines.push("this instance handles commands routed to dev".to_owned());
+                lines.push("example: !devid.diag".to_owned());
+            }
         } else {
-            lines.push("this instance handles commands without -d".to_owned());
+            if let Some(dev_id) = ctx.dev_id.as_deref() {
+                lines.push(format!("commands without !{dev_id}. prefix run here"));
+                lines.push(format!(
+                    "commands containing !{dev_id}.<command> are ignored"
+                ));
+            } else {
+                lines.push("this instance handles commands without a dev prefix".to_owned());
+            }
             lines.push("example: !diag".to_owned());
         }
         send_text(ctx, lines.join("\n")).await

@@ -206,7 +206,7 @@ impl Tool for AiTool {
         // Build system prompt with the chat context injected; clarify routing flags
         let mut system_prompt = format!(
             "Your name is {name}. People will tag you as @{name}.
-Note: tokens like -d/--dev are routing flags; ignore them in content—they are not part of your name.
+Routing prefixes like !dev.command or @dev.name are delivery hints; ignore them when referring to yourself or others.
 {system_prompt_base}",
         );
         let ctx_lines = read_last_history(&ctx.history_dir, &ctx.room.room_id().to_owned(), 11);
@@ -290,7 +290,15 @@ Note: tokens like -d/--dev are routing flags; ignore them in content—they are 
                         } else {
                             ""
                         };
-                        let prefix = format!("@{name}:");
+                        let prefix = if ctx.dev_active {
+                            if let Some(dev_id) = ctx.dev_id.as_deref() {
+                                format!("@{dev_id}.{name}:")
+                            } else {
+                                format!("@{name}:")
+                            }
+                        } else {
+                            format!("@{name}:")
+                        };
                         let bold_prefix = to_bold(&prefix);
                         let text = format!("{header}{bold_prefix} {out}");
                         let content = RoomMessageEventContent::text_plain(text);
