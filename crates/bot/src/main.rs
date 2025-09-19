@@ -124,6 +124,8 @@ struct BotConfig {
     #[serde(default)]
     dev_mode: Option<bool>,
     #[serde(default)]
+    dev_id: Option<String>,
+    #[serde(default)]
     tools: Option<Vec<ToolSpec>>,
 }
 
@@ -242,9 +244,15 @@ async fn main() -> Result<()> {
     let config = load_config(&args.config)?;
     let env_dev = matches!(args.mode.as_deref(), Some(m) if m.eq_ignore_ascii_case("dev"));
     let dev_active = (args.dev || env_dev) && config.dev_mode.unwrap_or(false);
+    let dev_id = config.dev_id.as_ref().map(|s| Arc::<str>::from(s.as_str()));
+    if dev_active && dev_id.is_none() {
+        return Err(anyhow!(
+            "Dev mode requested but no dev_id provided in config.yaml"
+        ));
+    }
     let relay = Arc::new(resolve_relay_map(&client, &config).await?);
     // Loud banner so mode is obvious at startup
-    print_mode_banner(dev_active);
+    print_mode_banner(dev_active, dev_id.as_deref());
     // Build tools registry
     let ai_handle_env = std::env::var("AI_HANDLE").ok().map(|raw| {
         if raw.starts_with('@') {
@@ -284,6 +292,7 @@ async fn main() -> Result<()> {
     // Message handler: tools + relay
     let registry_for_handler = Arc::clone(&registry);
     let history_dir_for_handler = history_dir;
+    let dev_id_for_handler = dev_id.clone();
     client.add_event_handler(async move |ev: OriginalSyncRoomMessageEvent, room: Room, client: Client| {
         // Identify own user; do not early-return yet so we can record history even for own messages
         let Some(own_id) = client.user_id() else { return; };
@@ -357,27 +366,46 @@ async fn main() -> Result<()> {
         // For own messages, stop after recording history; do not trigger tools/relay
         if ev.sender == own_id { return; }
         if let Some(body) = body_opt.map(str::trim) {
+            let dev_id_opt = dev_id_for_handler.as_deref();
             // !command
             if body.starts_with('!') {
                 let mut parts = body.splitn(2, ' ');
                 let cmd = parts.next().unwrap_or("");
                 let args_raw = parts.next().unwrap_or("").trim();
-                info!(cmd = %cmd, args = %args_raw, "Parsed command token");
-                if let Some(id) = registry_for_handler.by_command.get(cmd)
+                let (normalized_cmd, routing) = classify_command_token(cmd, dev_id_opt);
+                info!(cmd = %cmd, normalized_cmd = %normalized_cmd, route = ?routing, args = %args_raw, dev_active = dev_active, "Parsed command token");
+                if let Some(id) = registry_for_handler.by_command.get(&normalized_cmd)
                     && let Some(entry) = registry_for_handler.by_id.get(id)
                 {
-                    let (args_clean, arg_dev_flag) = extract_dev_flag(args_raw);
-                    info!(tool = %id, arg_dev = arg_dev_flag, dev_active = dev_active, "Command routing");
-                    if arg_dev_flag != dev_active {
-                        info!(tool = %id, "Ignoring command due to env mismatch");
-                    } else if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active {
-                        info!(tool = %id, "Ignoring dev-only tool in prod mode");
-                    } else if !registry_for_handler.is_enabled(id) {
-                        info!(tool = %id, "Tool disabled");
-                    } else {
-                        let ctx = ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
-                        if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
-                            warn!(error = %e, tool = %id, "Tool failed");
+                    let args_clean = args_raw.to_owned();
+                    match routing {
+                        DevRouting::OtherDev => {
+                            info!(tool = %id, "Ignoring command targeted at different dev id");
+                        }
+                        DevRouting::Dev if !dev_active => {
+                            info!(tool = %id, "Ignoring dev command in prod mode");
+                        }
+                        DevRouting::Prod if dev_active => {
+                            info!(tool = %id, "Ignoring prod command in dev mode");
+                        }
+                        _ if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active => {
+                            info!(tool = %id, "Ignoring dev-only tool in prod mode");
+                        }
+                        _ if !registry_for_handler.is_enabled(id) => {
+                            info!(tool = %id, "Tool disabled");
+                        }
+                        _ => {
+                            let ctx = ToolContext {
+                                client: client.clone(),
+                                room: room.clone(),
+                                dev_active,
+                                dev_id: dev_id_for_handler.clone(),
+                                registry: Arc::clone(&registry_for_handler),
+                                history_dir: Arc::clone(&history_dir_for_handler),
+                            };
+                            if let Err(e) = entry.tool.run(&ctx, &args_clean, &entry.spec).await {
+                                warn!(error = %e, tool = %id, "Tool failed");
+                            }
                         }
                     }
                 }
@@ -396,27 +424,44 @@ async fn main() -> Result<()> {
                     search_from = token_index + token_raw.len();
 
                     let token = token_raw.trim_end_matches([':', ',', '.', '!', '?', '—', '–', ')', ']', '>', '"', '\'']);
-                    let key = token.to_lowercase();
-                    info!(token_raw = %token_raw, token = %token, key = %key, "Checking mention token");
+                    let (normalized_mention, routing) = classify_mention_token(token, dev_id_opt);
+                    let key = normalized_mention.to_lowercase();
+                    info!(token_raw = %token_raw, token = %token, normalized = %normalized_mention, key = %key, route = ?routing, "Checking mention token");
                     if let Some(id) = registry_for_handler.by_mention.get(&key)
                         && let Some(entry) = registry_for_handler.by_id.get(id)
                     {
                         info!(tool = %id, token_index, "Mention matched");
                         // Use the FULL body as the prompt so earlier words are preserved
-                        // (the AI can see the initiator and -d as part of the message)
+                        // (the AI can see the initiator and routing prefix as part of the message)
                         let args_source = body;
-                        let (_ignored, arg_dev_flag) = extract_dev_flag(args_source);
-                        info!(tool = %id, arg_dev = arg_dev_flag, dev_active = dev_active, "Mention routing");
-                        if arg_dev_flag != dev_active {
-                            info!(tool = %id, "Ignoring mention due to env mismatch");
-                        } else if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active {
-                            info!(tool = %id, "Ignoring dev-only tool in prod mode");
-                        } else if !registry_for_handler.is_enabled(id) {
-                            info!(tool = %id, "Tool disabled");
-                        } else {
-                            let ctx = ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
-                            if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
-                                warn!(error = %e, tool = %id, "Tool failed");
+                        match routing {
+                            DevRouting::OtherDev => {
+                                info!(tool = %id, "Ignoring mention targeted at different dev id");
+                            }
+                            DevRouting::Dev if !dev_active => {
+                                info!(tool = %id, "Ignoring dev mention in prod mode");
+                            }
+                            DevRouting::Prod if dev_active => {
+                                info!(tool = %id, "Ignoring prod mention in dev mode");
+                            }
+                            _ if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active => {
+                                info!(tool = %id, "Ignoring dev-only tool in prod mode");
+                            }
+                            _ if !registry_for_handler.is_enabled(id) => {
+                                info!(tool = %id, "Tool disabled");
+                            }
+                            _ => {
+                                let ctx = ToolContext {
+                                    client: client.clone(),
+                                    room: room.clone(),
+                                    dev_active,
+                                    dev_id: dev_id_for_handler.clone(),
+                                    registry: Arc::clone(&registry_for_handler),
+                                    history_dir: Arc::clone(&history_dir_for_handler),
+                                };
+                                if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
+                                    warn!(error = %e, tool = %id, "Tool failed");
+                                }
                             }
                         }
                         mention_handled = true;
@@ -426,28 +471,55 @@ async fn main() -> Result<()> {
                 // Fallback: only if nothing handled above
                 if !mention_handled {
                     let fallback_name = std::env::var("AI_NAME").unwrap_or_else(|_| "Claire".to_owned());
-                    let fallback_handle = format!("@{}", fallback_name.to_lowercase());
                     let body_lc = body.to_lowercase();
-                    if body_lc.contains(&fallback_handle) {
-                        if let Some(entry) = registry_for_handler.by_id.get("ai") {
-                            // Use the FULL body as prompt for fallback as well
-                            let args_source = body;
-                            let (_ignored, arg_dev_flag) = extract_dev_flag(args_source);
-                            info!(tool = %"ai", arg_dev = arg_dev_flag, dev_active = dev_active, "Fallback mention routing by contains");
-                            if arg_dev_flag != dev_active {
-                                info!(tool = %"ai", "Ignoring mention due to env mismatch");
-                            } else if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active {
-                                info!(tool = %"ai", "Ignoring dev-only tool in prod mode");
-                            } else if !registry_for_handler.is_enabled("ai") {
-                                info!(tool = %"ai", "Tool disabled");
-                            } else {
-                                let ctx = ToolContext { client: client.clone(), room: room.clone(), dev_active, registry: Arc::clone(&registry_for_handler), history_dir: Arc::clone(&history_dir_for_handler) };
-                                if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
-                                    warn!(error = %e, tool = %"ai", "Tool failed");
+                    let fallback_route = if dev_active {
+                        dev_id_opt.map(|id| {
+                            let name = fallback_name.to_lowercase();
+                            (format!("@{id}.{name}"), DevRouting::Dev)
+                        })
+                    } else {
+                        Some((format!("@{}", fallback_name.to_lowercase()), DevRouting::Prod))
+                    };
+                    if let Some((handle, routing)) = fallback_route {
+                        let handle_lc = handle.to_lowercase();
+                        if body_lc.contains(&handle_lc) {
+                            if let Some(entry) = registry_for_handler.by_id.get("ai") {
+                                // Use the FULL body as prompt for fallback as well
+                                let args_source = body;
+                                info!(tool = %"ai", route = ?routing, dev_active = dev_active, "Fallback mention routing by contains");
+                                match routing {
+                                    DevRouting::Dev if !dev_active => {
+                                        info!(tool = %"ai", "Ignoring dev mention in prod mode");
+                                    }
+                                    DevRouting::Prod if dev_active => {
+                                        info!(tool = %"ai", "Ignoring prod mention in dev mode");
+                                    }
+                                    DevRouting::OtherDev => {
+                                        info!(tool = %"ai", "Ignoring mention targeted at different dev id");
+                                    }
+                                    _ if entry.spec.dev_only.unwrap_or_else(|| entry.tool.dev_only()) && !dev_active => {
+                                        info!(tool = %"ai", "Ignoring dev-only tool in prod mode");
+                                    }
+                                    _ if !registry_for_handler.is_enabled("ai") => {
+                                        info!(tool = %"ai", "Tool disabled");
+                                    }
+                                    _ => {
+                                        let ctx = ToolContext {
+                                            client: client.clone(),
+                                            room: room.clone(),
+                                            dev_active,
+                                            dev_id: dev_id_for_handler.clone(),
+                                            registry: Arc::clone(&registry_for_handler),
+                                            history_dir: Arc::clone(&history_dir_for_handler),
+                                        };
+                                        if let Err(e) = entry.tool.run(&ctx, args_source, &entry.spec).await {
+                                            warn!(error = %e, tool = %"ai", "Tool failed");
+                                        }
+                                    }
                                 }
+                            } else {
+                                info!("Fallback mention found but 'ai' tool not registered");
                             }
-                        } else {
-                            info!("Fallback mention found but 'ai' tool not registered");
                         }
                     }
                 }
@@ -645,18 +717,28 @@ fn load_config(path: &PathBuf) -> Result<BotConfig> {
     Ok(cfg)
 }
 
-fn print_mode_banner(dev_active: bool) {
+fn print_mode_banner(dev_active: bool, dev_id: Option<&str>) {
     let is_tty = std::io::stdout().is_terminal();
     let (title, sub, color) = if dev_active {
+        let hint = if let Some(id) = dev_id {
+            format!("Send !{id}.command targets this instance")
+        } else {
+            "Send !dev.command targets this instance".to_owned()
+        };
         (
             "DEVELOPMENT MODE ACTIVE",
-            "RELAYING IS DISABLED — use -d or MATRIX_MODE=dev",
+            hint,
             "\x1b[1;33m", // bold yellow
         )
     } else {
+        let hint = if let Some(id) = dev_id {
+            format!("Relaying enabled — commands without !{id}. prefix")
+        } else {
+            "Relaying is enabled — commands without a dev prefix".to_owned()
+        };
         (
             "PRODUCTION MODE",
-            "Relaying is enabled — commands without -d",
+            hint,
             "\x1b[1;32m", // bold green
         )
     };
@@ -903,17 +985,45 @@ fn parse_mime(opt: Option<&str>) -> Mime {
         .unwrap_or(mime::APPLICATION_OCTET_STREAM)
 }
 
-fn extract_dev_flag(args: &str) -> (String, bool) {
-    let mut dev = false;
-    let mut kept: Vec<&str> = Vec::new();
-    for tok in args.split_whitespace() {
-        if tok == "-d" || tok == "--dev" {
-            dev = true;
-        } else {
-            kept.push(tok);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DevRouting {
+    Prod,
+    Dev,
+    OtherDev,
+}
+
+fn classify_command_token(cmd: &str, dev_id: Option<&str>) -> (String, DevRouting) {
+    if let Some(stripped) = cmd.strip_prefix('!') {
+        if let Some((dev_tag, remainder)) = stripped.split_once('.') {
+            if remainder.is_empty() {
+                return (cmd.to_owned(), DevRouting::OtherDev);
+            }
+            let normalized = format!("!{remainder}");
+            let routing = match dev_id {
+                Some(expected) if expected.eq_ignore_ascii_case(dev_tag) => DevRouting::Dev,
+                _ => DevRouting::OtherDev,
+            };
+            return (normalized, routing);
         }
     }
-    (kept.join(" "), dev)
+    (cmd.to_owned(), DevRouting::Prod)
+}
+
+fn classify_mention_token(token: &str, dev_id: Option<&str>) -> (String, DevRouting) {
+    if let Some(stripped) = token.strip_prefix('@') {
+        if let Some((dev_tag, remainder)) = stripped.split_once('.') {
+            if remainder.is_empty() {
+                return (token.to_owned(), DevRouting::OtherDev);
+            }
+            let normalized = format!("@{remainder}");
+            let routing = match dev_id {
+                Some(expected) if expected.eq_ignore_ascii_case(dev_tag) => DevRouting::Dev,
+                _ => DevRouting::OtherDev,
+            };
+            return (normalized, routing);
+        }
+    }
+    (token.to_owned(), DevRouting::Prod)
 }
 
 async fn reupload_image(

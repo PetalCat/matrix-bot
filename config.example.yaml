@@ -3,6 +3,8 @@
 # will be forwarded to the other rooms in the same cluster.
 
 ## Global defaults (can be overridden per-cluster)
+# dev_mode: false         # enable dev-mode gating for this instance
+# dev_id: your-dev-id     # identifier used for !devid.command and @devid.mention
 # reupload_media: true    # download remote media and reupload before sending
 # caption_media:  true    # send a caption like "Name: sent an image"
 

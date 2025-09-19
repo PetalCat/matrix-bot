@@ -12,6 +12,7 @@ pub struct ToolContext {
     pub client: Client,
     pub room: Room,
     pub dev_active: bool,
+    pub dev_id: Option<Arc<str>>,
     pub registry: Arc<ToolsRegistry>,
     pub history_dir: Arc<PathBuf>,
 }
