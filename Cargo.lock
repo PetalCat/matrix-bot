@@ -2048,10 +2048,12 @@ dependencies = [
  "matrix-sdk",
  "mime",
  "plugin-ai",
+ "plugin-core",
  "plugin-diagnostics",
  "plugin-echo",
  "plugin-mode",
  "plugin-ping",
+ "plugin-relay",
  "plugin-tools-manager",
  "rpassword",
  "serde",
@@ -2059,7 +2061,6 @@ dependencies = [
  "serde_yaml",
  "time",
  "tokio",
- "tools",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2669,12 +2670,24 @@ dependencies = [
  "anyhow",
  "async-trait",
  "matrix-sdk",
+ "plugin-core",
  "reqwest",
  "serde",
  "serde_yaml",
  "time",
- "tools",
  "tracing",
+]
+
+[[package]]
+name = "plugin-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "matrix-sdk",
+ "serde",
+ "serde_yaml",
+ "tokio",
 ]
 
 [[package]]
@@ -2683,8 +2696,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "plugin-core",
  "serde_yaml",
- "tools",
 ]
 
 [[package]]
@@ -2693,9 +2706,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "plugin-core",
  "serde",
  "serde_yaml",
- "tools",
 ]
 
 [[package]]
@@ -2704,8 +2717,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "plugin-core",
  "serde_yaml",
- "tools",
 ]
 
 [[package]]
@@ -2714,8 +2727,23 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "plugin-core",
  "serde_yaml",
- "tools",
+]
+
+[[package]]
+name = "plugin-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "matrix-sdk",
+ "mime",
+ "plugin-core",
+ "serde",
+ "serde_yaml",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2724,8 +2752,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "plugin-core",
  "serde_yaml",
- "tools",
 ]
 
 [[package]]
@@ -4192,18 +4220,6 @@ dependencies = [
  "serde_spanned",
  "toml_datetime",
  "winnow",
-]
-
-[[package]]
-name = "tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "matrix-sdk",
- "serde",
- "serde_yaml",
- "tokio",
 ]
 
 [[package]]

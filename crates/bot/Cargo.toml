@@ -26,7 +26,8 @@ plugin-echo = {  path = "../plugin-echo" }
 plugin-mode = {  path = "../plugin-mode" }
 plugin-ping = {  path = "../plugin-ping" }
 plugin-tools-manager = {  path = "../plugin-tools-manager" }
-tools = { path = "../tools" }
+plugin-relay = {  path = "../plugin-relay" }
+plugin-core = { path = "../plugin-core" }
 
 [features]
 default = ["rpassword"]

@@ -13,7 +13,7 @@ serde_yaml.workspace = true
 time.workspace = true
 tracing.workspace = true
 
-tools = { path = "../tools" }
+plugin-core = { path = "../plugin-core" }
 
 [lints]
 workspace = true

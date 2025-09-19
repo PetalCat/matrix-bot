@@ -1,57 +1,75 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::ToOwned, collections::HashMap, sync::Arc};
 
-use tokio::sync::Mutex;
-use tools::{Tool, ToolEntry, ToolSpec, ToolsRegistry, plugin_trait::Plugin};
+use crate::{BotConfig, RoomCluster};
+use plugin_core::{PluginRegistry, PluginSpec, PluginTriggers, factory::PluginFactory};
+use plugin_relay::{RelayConfig, RelayPlugin};
 use tracing::warn;
 
-struct PluginRegistry {
-    plugins: HashMap<String, Box<dyn Plugin>>,
+struct FactoryRegistry {
+    factories: HashMap<String, Box<dyn PluginFactory>>,
 }
 
-impl PluginRegistry {
+impl FactoryRegistry {
     fn new() -> Self {
         Self {
-            plugins: HashMap::new(),
+            factories: HashMap::new(),
         }
     }
 
-    fn with_plugin<P: Plugin + 'static>(mut self, name: impl Into<String>, plugin: P) -> Self {
-        self.plugins.insert(name.into(), Box::new(plugin));
+    fn with_factory<F: PluginFactory + 'static>(
+        mut self,
+        name: impl Into<String>,
+        factory: F,
+    ) -> Self {
+        self.factories.insert(name.into(), Box::new(factory));
         self
     }
 
-    fn get(&self, name: &str) -> Option<&dyn Plugin> {
-        self.plugins.get(name).map(|p| &**p)
+    fn get(&self, name: &str) -> Option<&dyn PluginFactory> {
+        self.factories.get(name).map(|f| &**f)
     }
 }
 
-pub fn build_registry(
-    config_tools: Option<Vec<ToolSpec>>,
+pub async fn build_registry(
+    config: &BotConfig,
     env_ai_handle: Option<String>,
-) -> ToolsRegistry {
-    let mut by_id: HashMap<String, ToolEntry> = HashMap::new();
-    let mut by_command: HashMap<String, String> = HashMap::new();
-    let mut by_mention: HashMap<String, String> = HashMap::new();
+) -> Arc<PluginRegistry> {
+    let factories = FactoryRegistry::new()
+        .with_factory("ping", plugin_ping::PingPlugin)
+        .with_factory("mode", plugin_mode::ModePlugin)
+        .with_factory("diag", plugin_diagnostics::DiagnosticsPlugin)
+        .with_factory("tools", plugin_tools_manager::ToolsManagerPlugin)
+        .with_factory("ai", plugin_ai::AiPlugin)
+        .with_factory("echo", plugin_echo::EchoPlugin)
+        .with_factory("relay", RelayPlugin);
 
-    let registry = PluginRegistry::new()
-        .with_plugin("ping", plugin_ping::PingPlugin)
-        .with_plugin("mode", plugin_mode::ModePlugin)
-        .with_plugin("diag", plugin_diagnostics::DiagnosticsPlugin)
-        .with_plugin("tools", plugin_tools_manager::ToolsManagerPlugin)
-        .with_plugin("ai", plugin_ai::AiPlugin)
-        .with_plugin("echo", plugin_echo::EchoPlugin);
+    let mut specs = config.plugins.clone().unwrap_or_default();
 
-    // defaults from each tool module
-    let mut specs = config_tools.unwrap_or_default();
-
-    for plugin in registry.plugins.values() {
-        plugin.register_defaults(&mut specs);
+    // Inject relay plugin configuration if clusters are defined and no explicit spec exists.
+    if !specs.iter().any(|s| s.id == "relay") && !config.clusters.is_empty() {
+        let relay_config = RelayConfig {
+            clusters: config.clusters.iter().map(cluster_from_bot).collect(),
+            reupload_media: config.reupload_media,
+            caption_media: config.caption_media,
+        };
+        let config_value = serde_yaml::to_value(relay_config).unwrap_or_default();
+        specs.push(PluginSpec {
+            id: "relay".to_owned(),
+            enabled: true,
+            dev_only: None,
+            triggers: PluginTriggers::default(),
+            config: config_value,
+        });
     }
+
+    for factory in factories.factories.values() {
+        factory.register_defaults(&mut specs);
+    }
+
     if let Some(handle) = env_ai_handle {
         append_mention(&mut specs, "ai", &handle);
     }
 
-    // If ai has no mention trigger yet, derive one from name (config or AI_NAME) or default to @Claire
     if !specs
         .iter()
         .any(|t| t.id == "ai" && !t.triggers.mentions.is_empty())
@@ -67,60 +85,37 @@ pub fn build_registry(
         ai_spec.triggers.mentions.push(format!("@{name}"));
     }
 
-    for mut spec in specs {
-        let tool: Arc<dyn Tool> = if let Some(plugin) = registry.get(spec.id.as_str()) {
-            plugin.build()
-        } else {
-            warn!("Unknown tool ID: {}", spec.id);
+    let registry = Arc::new(PluginRegistry::new());
+    let default_dir = if std::path::Path::new("./plugins").exists() {
+        "./plugins".to_owned()
+    } else {
+        "./tools".to_owned()
+    };
+    let plugins_dir = std::env::var("PLUGINS_DIR")
+        .or_else(|_| std::env::var("TOOLS_DIR"))
+        .unwrap_or(default_dir);
 
-            // unknown tool id
+    for mut spec in specs {
+        let Some(factory) = factories.get(spec.id.as_str()) else {
+            warn!("Unknown plugin ID: {}", spec.id);
             continue;
         };
-
-        // tool configs directory (can override via TOOLS_DIR). Default to tools/ in cwd.
-        let tools_dir = std::env::var("TOOLS_DIR").unwrap_or_else(|_| "./tools".to_owned());
-
-        // Load per-tool config from tools_dir/<id>/config.yaml and merge.
-        if let Some(file_cfg) = load_tool_config(&tools_dir, spec.id.as_str()) {
-            spec.config = merge_yaml(file_cfg, spec.config); // file takes precedence
+        let plugin = factory.build();
+        if let Some(file_cfg) = load_plugin_config(&plugins_dir, spec.id.as_str()) {
+            spec.config = merge_yaml(file_cfg, spec.config);
         }
-        by_command.extend(
-            spec.triggers
-                .commands
-                .iter()
-                .map(|c| (normalize_cmd(c), spec.id.clone())),
-        );
-        by_mention.extend(
-            spec.triggers
-                .mentions
-                .iter()
-                .map(|m| (normalize_mention(m), spec.id.clone())),
-        );
-        by_id.insert(spec.id.clone(), ToolEntry { spec, tool });
+        registry.register(spec, plugin).await;
     }
 
-    ToolsRegistry {
-        by_id: Arc::new(by_id),
-        by_command: Arc::new(by_command),
-        by_mention: Arc::new(by_mention),
-        state: Arc::new(Mutex::new(HashMap::new())),
-    }
+    registry
 }
 
-fn normalize_cmd(s: &str) -> String {
-    if s.starts_with('!') {
-        s.to_owned()
-    } else {
-        format!("!{s}")
+fn cluster_from_bot(cluster: &RoomCluster) -> plugin_relay::RelayCluster {
+    plugin_relay::RelayCluster {
+        rooms: cluster.rooms.clone(),
+        reupload_media: cluster.reupload_media,
+        caption_media: cluster.caption_media,
     }
-}
-fn normalize_mention(s: &str) -> String {
-    let raw = if s.starts_with('@') {
-        s.to_owned()
-    } else {
-        format!("@{s}")
-    };
-    raw.to_lowercase()
 }
 
 fn merge_yaml(file_cfg: serde_yaml::Value, spec_cfg: serde_yaml::Value) -> serde_yaml::Value {
@@ -144,32 +139,30 @@ fn merge_yaml(file_cfg: serde_yaml::Value, spec_cfg: serde_yaml::Value) -> serde
             a.extend(b);
             Sequence(a)
         }
-        // By default, prefer file config value when types differ or non-mapping
         (a, _b) => a,
     }
 }
 
-fn append_mention(specs: &mut [ToolSpec], id: &str, mention: &str) {
+fn append_mention(specs: &mut [PluginSpec], id: &str, mention: &str) {
     if let Some(t) = specs.iter_mut().find(|t| t.id == id) {
         t.triggers.mentions.push(mention.to_owned());
     }
 }
 
-fn load_tool_config(root: &str, id: &str) -> Option<serde_yaml::Value> {
+fn load_plugin_config(root: &str, id: &str) -> Option<serde_yaml::Value> {
     let root = root.trim_end_matches('/');
     let path = format!("{root}/{id}/config.yaml");
     match std::fs::read_to_string(&path) {
         Ok(s) => match serde_yaml::from_str::<serde_yaml::Value>(&s) {
             Ok(v) => Some(v),
             Err(e) => {
-                tracing::warn!(tool = %id, file = %path, error = %e, "Failed to parse tool config YAML");
+                tracing::warn!(plugin = %id, file = %path, error = %e, "Failed to parse plugin config YAML");
                 None
             }
         },
         Err(e) => {
-            // Only log if file exists but couldn't be read; otherwise silent if not found
             if std::path::Path::new(&path).exists() {
-                tracing::warn!(tool = %id, file = %path, error = %e, "Failed to read tool config file");
+                tracing::warn!(plugin = %id, file = %path, error = %e, "Failed to read plugin config file");
             }
             None
         }

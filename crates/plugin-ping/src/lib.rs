@@ -3,19 +3,18 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use async_trait::async_trait;
-use tools::{Tool, ToolContext, ToolSpec, send_text};
-
-use tools::plugin_trait::Plugin;
+use plugin_core::factory::PluginFactory;
+use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, send_text};
 
 pub struct PingPlugin;
 
-impl Plugin for PingPlugin {
-    fn register_defaults(&self, specs: &mut Vec<tools::ToolSpec>) {
-        specs.push(tools::ToolSpec {
+impl PluginFactory for PingPlugin {
+    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
+        specs.push(PluginSpec {
             id: "ping".to_owned(),
             enabled: true,
             dev_only: None,
-            triggers: tools::ToolTriggers {
+            triggers: PluginTriggers {
                 commands: vec!["!ping".to_owned()],
                 mentions: vec![],
             },
@@ -23,7 +22,7 @@ impl Plugin for PingPlugin {
         });
     }
 
-    fn build(&self) -> Arc<dyn Tool> {
+    fn build(&self) -> Arc<dyn Plugin> {
         Arc::new(Ping)
     }
 }
@@ -31,7 +30,7 @@ impl Plugin for PingPlugin {
 pub struct Ping;
 
 #[async_trait]
-impl Tool for Ping {
+impl Plugin for Ping {
     fn id(&self) -> &'static str {
         "ping"
     }
@@ -39,7 +38,7 @@ impl Tool for Ping {
         "🏓"
     }
 
-    async fn run(&self, ctx: &ToolContext, _args: &str, _spec: &ToolSpec) -> Result<()> {
+    async fn run(&self, ctx: &PluginContext, _args: &str, _spec: &PluginSpec) -> Result<()> {
         send_text(ctx, "Pong! 🏓".to_owned()).await
     }
 }
