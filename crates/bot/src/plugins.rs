@@ -1,4 +1,4 @@
-use std::{borrow::ToOwned, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{BotConfig, RoomCluster};
 use plugin_core::{PluginRegistry, PluginSpec, PluginTriggers, factory::PluginFactory};
@@ -30,10 +30,7 @@ impl FactoryRegistry {
     }
 }
 
-pub async fn build_registry(
-    config: &BotConfig,
-    env_ai_handle: Option<String>,
-) -> Arc<PluginRegistry> {
+pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
     let factories = FactoryRegistry::new()
         .with_factory("ping", plugin_ping::PingPlugin)
         .with_factory("mode", plugin_mode::ModePlugin)
@@ -64,25 +61,6 @@ pub async fn build_registry(
 
     for factory in factories.factories.values() {
         factory.register_defaults(&mut specs);
-    }
-
-    if let Some(handle) = env_ai_handle {
-        append_mention(&mut specs, "ai", &handle);
-    }
-
-    if !specs
-        .iter()
-        .any(|t| t.id == "ai" && !t.triggers.mentions.is_empty())
-        && let Some(ai_spec) = specs.iter_mut().find(|t| t.id == "ai")
-    {
-        let name = ai_spec
-            .config
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned)
-            .or_else(|| std::env::var("AI_NAME").ok())
-            .unwrap_or_else(|| "Claire".to_owned());
-        ai_spec.triggers.mentions.push(format!("@{name}"));
     }
 
     let registry = Arc::new(PluginRegistry::new());
@@ -140,12 +118,6 @@ fn merge_yaml(file_cfg: serde_yaml::Value, spec_cfg: serde_yaml::Value) -> serde
             Sequence(a)
         }
         (a, _b) => a,
-    }
-}
-
-fn append_mention(specs: &mut [PluginSpec], id: &str, mention: &str) {
-    if let Some(t) = specs.iter_mut().find(|t| t.id == id) {
-        t.triggers.mentions.push(mention.to_owned());
     }
 }
 

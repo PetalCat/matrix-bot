@@ -1,6 +1,11 @@
 pub mod factory;
 
-use std::{borrow::ToOwned, collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    borrow::ToOwned,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -22,6 +27,11 @@ pub struct PluginContext {
     pub history_dir: Arc<PathBuf>,
 }
 
+pub struct RoomMessageMeta<'a> {
+    pub body: Option<&'a str>,
+    pub triggered_plugins: &'a HashSet<String>,
+}
+
 #[async_trait]
 pub trait Plugin: Send + Sync {
     fn id(&self) -> &'static str;
@@ -32,6 +42,9 @@ pub trait Plugin: Send + Sync {
     fn handles_room_messages(&self) -> bool {
         false
     }
+    fn wants_own_messages(&self) -> bool {
+        false
+    }
     async fn run(&self, ctx: &PluginContext, args: &str, spec: &PluginSpec) -> Result<()>;
 
     async fn on_room_message(
@@ -39,6 +52,7 @@ pub trait Plugin: Send + Sync {
         _ctx: &PluginContext,
         _event: &OriginalSyncRoomMessageEvent,
         _spec: &PluginSpec,
+        _meta: &RoomMessageMeta<'_>,
     ) -> Result<()> {
         Ok(())
     }
