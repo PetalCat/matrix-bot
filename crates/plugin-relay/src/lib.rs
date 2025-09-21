@@ -26,6 +26,7 @@ use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, RoomMessage
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+#[derive(Debug)]
 pub struct RelayPlugin;
 
 impl PluginFactory for RelayPlugin {
@@ -46,7 +47,7 @@ impl PluginFactory for RelayPlugin {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Relay {
     plan: RwLock<Option<Arc<RelayPlan>>>,
 }

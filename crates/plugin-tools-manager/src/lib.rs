@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use plugin_core::factory::PluginFactory;
 use plugin_core::{Plugin, PluginContext, PluginRegistry, PluginSpec, PluginTriggers, send_text};
 
+#[derive(Debug)]
 pub struct ToolsManagerPlugin;
 
 impl PluginFactory for ToolsManagerPlugin {
@@ -29,6 +30,7 @@ impl PluginFactory for ToolsManagerPlugin {
     }
 }
 
+#[derive(Debug)]
 pub struct ToolsManager;
 
 #[async_trait]

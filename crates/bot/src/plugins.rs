@@ -5,6 +5,7 @@ use plugin_core::{PluginRegistry, PluginSpec, PluginTriggers, factory::PluginFac
 use plugin_relay::{RelayConfig, RelayPlugin};
 use tracing::warn;
 
+// TODO: Why have both FactoryRegistry and PluginRegistry? Can we merge them?
 struct FactoryRegistry {
     factories: HashMap<String, Box<dyn PluginFactory + Send + Sync>>,
 }

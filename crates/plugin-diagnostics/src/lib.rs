@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use plugin_core::factory::PluginFactory;
 use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, send_text};
 
+#[derive(Debug)]
 pub struct DiagnosticsPlugin;
 
 impl PluginFactory for DiagnosticsPlugin {
@@ -29,6 +30,7 @@ impl PluginFactory for DiagnosticsPlugin {
     }
 }
 
+#[derive(Debug)]
 pub struct DiagTool;
 
 #[async_trait]

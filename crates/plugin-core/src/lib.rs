@@ -1,5 +1,6 @@
 pub mod factory;
 
+use core::fmt::Debug;
 use std::{
     borrow::ToOwned,
     collections::{HashMap, HashSet},
@@ -17,7 +18,7 @@ use matrix_sdk::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PluginContext {
     pub client: Client,
     pub room: Room,
@@ -27,13 +28,14 @@ pub struct PluginContext {
     pub history_dir: Arc<PathBuf>,
 }
 
+#[derive(Debug)]
 pub struct RoomMessageMeta<'a> {
     pub body: Option<&'a str>,
     pub triggered_plugins: &'a HashSet<String>,
 }
 
 #[async_trait]
-pub trait Plugin: Send + Sync {
+pub trait Plugin: Send + Sync + Debug {
     fn id(&self) -> &'static str;
     fn help(&self) -> &'static str;
     fn dev_only(&self) -> bool {
@@ -83,13 +85,13 @@ const fn enabled_true() -> bool {
     true
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PluginEntry {
     pub spec: PluginSpec,
     pub plugin: Arc<dyn Plugin + Send + Sync>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct RegistryInner {
     by_id: HashMap<String, PluginEntry>,
     by_command: HashMap<String, String>,
@@ -97,7 +99,7 @@ struct RegistryInner {
     overrides: HashMap<String, bool>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct PluginRegistry {
     inner: Arc<RwLock<RegistryInner>>,
 }
