@@ -1,7 +1,7 @@
 use core::fmt::Write as _;
 use std::{
     borrow::ToOwned,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Once},
 };
@@ -23,7 +23,7 @@ use matrix_sdk::{
         serde::Raw,
     },
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use plugin_core::factory::PluginFactory;
 use plugin_core::{
@@ -31,6 +31,7 @@ use plugin_core::{
     str_config, truncate,
 };
 
+#[derive(Debug)]
 pub struct AiPlugin;
 
 static HISTORY_BACKFILL_ONCE: Once = Once::new();
@@ -46,6 +47,7 @@ impl PluginFactory for AiPlugin {
             {
                 spec.triggers.commands.push("!ai".into());
             }
+
             if let Some(handle) = ai_env_handle()
                 && !spec
                     .triggers
@@ -53,12 +55,18 @@ impl PluginFactory for AiPlugin {
                     .iter()
                     .any(|mention| mention.eq_ignore_ascii_case(&handle))
             {
+                debug!(
+                    handle = handle,
+                    "AI plugin spec found; injecting handle mention from AI_HANDLE env"
+                );
                 spec.triggers.mentions.push(handle);
             }
         } else {
+            debug!("AI plugin spec not found; injecting default configuration");
+
             let mut triggers = PluginTriggers {
                 commands: vec!["!ai".into()],
-                mentions: Vec::new(),
+                mentions: vec!["@claire".into()],
             };
             if let Some(handle) = ai_env_handle() {
                 triggers.mentions.push(handle);
@@ -97,27 +105,27 @@ Homework Help
 Lena: ugh this history question is killing me
 Max: lol what is it
 Lena: what year did WW2 end??
-Sam: easy, ask @Claire
-@Claire (AI): 1945 ✅ Germany surrendered in May, Japan in September.
+Sam: easy, ask (handle)
+(handle) (AI): 1945 ✅ Germany surrendered in May, Japan in September.
 
 Weekend Plans
 Billy: what do we wanna do Saturday?
 Jamie: bowling?
 Sam: eh kinda mid
-Billy: true… @Claire any ideas?
-@Claire (AI): Late-night movie + pizza run 🍕🎬 or mini-golf if y’all want something active.
+Billy: true… (handle) any ideas?
+(handle) (AI): Late-night movie + pizza run 🍕🎬 or mini-golf if y’all want something active.
 
 Random Debate
 Jamie: wait is cereal soup?
 Billy: nahhh it’s not soup
 Sam: bro it’s literally stuff in liquid
-Jamie: lmao ok @Claire settle this
-@Claire (AI): Cereal’s not really soup — soup’s usually hot and savory. But if you wanna be chaotic you can call it “breakfast soup” 😅
+Jamie: lmao ok (handle) settle this
+(handle) (AI): Cereal’s not really soup — soup’s usually hot and savory. But if you wanna be chaotic you can call it “breakfast soup” 😅
 
 Story / Longer Response
 Maya: bruh I’m bored tell me a scary story
-Alex: yeah @Claire give us something spooky
-@Claire (AI): Ok 👻 once, in a tiny mountain town, there was a single streetlight that never turned off… [story continues]
+Alex: yeah (handle) give us something spooky
+(handle) (AI): Ok 👻 once, in a tiny mountain town, there was a single streetlight that never turned off… [story continues]
 
 ⸻
 
@@ -130,6 +138,7 @@ Here’s the real convo. They tagged you. You have to reply next.
 → YOUR REPLY GOES HERE
 ";
 
+#[derive(Debug)]
 pub struct AiTool;
 
 #[async_trait]
@@ -279,8 +288,9 @@ Routing prefixes like !dev.command or @dev.name are delivery hints; ignore them 
         // Do not rewrite the latest invocation; the current message was already recorded in history pre-routing
         let context_lines = ctx_lines.join("\n");
         if !context_lines.is_empty() {
-            system_prompt =
-                system_prompt.replacen("(context grabbed from the chat)", &context_lines, 1);
+            system_prompt = system_prompt
+                .replace("(handle)", format!("@{name}").as_str())
+                .replacen("(context grabbed from the chat)", &context_lines, 1);
         }
 
         // Log request metadata (not the full content or secrets)
@@ -438,23 +448,24 @@ async fn record_history(ctx: &PluginContext, event: &OriginalSyncRoomMessageEven
     append_history_line(ctx.history_dir.as_ref().as_path(), &room_id, &line);
 }
 
-fn fallback_handles(ctx: &PluginContext, spec: &PluginSpec) -> Vec<String> {
-    let mut handles: Vec<String> = Vec::new();
+fn fallback_handles(ctx: &PluginContext, spec: &PluginSpec) -> BTreeSet<String> {
+    let mut handles: BTreeSet<String> = BTreeSet::new();
     if let Some(handle) = ai_env_handle() {
-        handles.push(handle.to_lowercase());
+        handles.insert(handle.to_lowercase());
     }
 
     let name = ai_name(spec).to_lowercase();
     if ctx.dev_active {
+        debug!(name = %name, dev_id = ?ctx.dev_id, "AI fallback in dev mode");
         if let Some(dev_id) = ctx.dev_id.as_deref() {
-            handles.push(format!("@{}.{}", dev_id.to_lowercase(), name));
+            handles.insert(format!("@{}.{}", dev_id.to_lowercase(), name));
         }
     } else {
-        handles.push(format!("@{name}"));
+        handles.insert(format!("@{name}"));
     }
 
-    handles.sort();
-    handles.dedup();
+    debug!(handles = ?handles, "AI fallback handles");
+
     handles
 }
 

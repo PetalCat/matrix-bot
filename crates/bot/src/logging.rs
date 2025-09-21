@@ -14,14 +14,17 @@ impl LogFormat {
         for<'a> S: Subscriber + LookupSpan<'a>,
     {
         // Shared configuration regardless of where logs are output to.
-        let fmt = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_thread_names(true);
+        let fmt = tracing_subscriber::fmt::layer().with_thread_names(true);
 
         // Configure the writer based on the desired log target:
         match self {
-            Self::Json => Box::new(fmt.json()),
-            Self::Pretty => Box::new(fmt.pretty().with_file(true).with_line_number(true)),
+            Self::Json => Box::new(fmt.json().with_target(false)),
+            Self::Pretty => Box::new(
+                fmt.pretty()
+                    .with_target(true)
+                    .with_file(true)
+                    .with_line_number(true),
+            ),
         }
     }
 }
@@ -31,7 +34,8 @@ pub fn init_tracing() {
 
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
+        .from_env()
+        .unwrap();
 
     let log_mode = match log_mode.as_str() {
         "json" => LogFormat::Json,

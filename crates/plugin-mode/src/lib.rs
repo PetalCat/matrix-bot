@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use plugin_core::factory::PluginFactory;
 use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, send_text};
 
+#[derive(Debug)]
 pub struct ModePlugin;
 
 impl PluginFactory for ModePlugin {
@@ -29,6 +30,7 @@ impl PluginFactory for ModePlugin {
     }
 }
 
+#[derive(Debug)]
 pub struct ModeTool;
 
 #[async_trait]

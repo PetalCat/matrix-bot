@@ -26,7 +26,7 @@ use matrix_sdk::{
     },
 };
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::logging::init_tracing;
 use plugin_core::{PluginContext, PluginSpec, RoomMessageMeta, truncate};
@@ -273,9 +273,6 @@ async fn main() -> Result<()> {
     }
 
     // Message handler: plugins + relay
-    let registry_for_handler = Arc::clone(&registry);
-    let history_dir_for_handler = history_dir;
-    let dev_id_for_handler = dev_id.clone();
     client.add_event_handler(async move |ev: OriginalSyncRoomMessageEvent, room: Room, client: Client| {
         // Identify own user; do not early-return yet so we can record history even for own messages
         let Some(own_id) = client.user_id() else { return; };
@@ -308,7 +305,7 @@ async fn main() -> Result<()> {
         let mut triggered_plugins: HashSet<String> = HashSet::new();
 
         if !is_self && let Some(body) = body_opt.map(str::trim) {
-            let dev_id_opt = dev_id_for_handler.as_deref();
+            let dev_id_opt = dev_id.as_deref();
             // !command
             if body.starts_with('!') {
                 let mut parts = body.splitn(2, ' ');
@@ -316,7 +313,7 @@ async fn main() -> Result<()> {
                 let args_raw = parts.next().unwrap_or("").trim();
                 let (normalized_cmd, routing) = classify_command_token(cmd, dev_id_opt);
                 info!(cmd = %cmd, normalized_cmd = %normalized_cmd, route = ?routing, args = %args_raw, dev_active = dev_active, "Parsed command token");
-                if let Some(entry) = registry_for_handler
+                if let Some(entry) = registry
                     .entry_by_command(&normalized_cmd)
                     .await
                 {
@@ -340,7 +337,7 @@ async fn main() -> Result<()> {
                         {
                             info!(plugin = %plugin_id, "Ignoring dev-only plugin in prod mode");
                         }
-                        _ if !registry_for_handler.is_enabled(&plugin_id).await => {
+                        _ if !registry.is_enabled(&plugin_id).await => {
                             info!(plugin = %plugin_id, "Plugin disabled");
                         }
                         DevRouting::Prod | DevRouting::Dev => {
@@ -348,9 +345,9 @@ async fn main() -> Result<()> {
                                 client: client.clone(),
                                 room: room.clone(),
                                 dev_active,
-                                dev_id: dev_id_for_handler.clone(),
-                                registry: Arc::clone(&registry_for_handler),
-                                history_dir: Arc::clone(&history_dir_for_handler),
+                                dev_id: dev_id.clone(),
+                                registry: Arc::clone(&registry),
+                                history_dir: Arc::clone(&history_dir),
                             };
                             if let Err(e) = entry.plugin.run(&ctx, &args_clean, &entry.spec).await {
                                 warn!(error = %e, plugin = %plugin_id, "Plugin failed");
@@ -361,40 +358,63 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            // @mention anywhere in the message (case-insensitive; tolerant of trailing punctuation)
+            // @mention anywhere in the message (case-insensitive; tolerant of punctuation)
             {
-                let mut search_from = 0usize;
-                for token_raw in body.split_whitespace() {
-                    // Find the token position in the original string starting from current cursor
-                    let token_index = if let Some(i) = body[search_from..].find(token_raw) { search_from + i } else {
-                        // advance cursor approximately and continue
-                        search_from = search_from.saturating_add(token_raw.len());
+                let mut executed_mention = false;
+                for (token_idx, token_raw) in body.split_whitespace().enumerate() {
+                    debug!(token_idx, token_raw = token_raw);
+                    // Fast skip: tokens without '@' cannot be mentions
+                    if !token_raw.contains('@') {
+                        debug!(token_idx, token_raw = token_raw, "Skip: no @ in token");
                         continue;
-                    };
-                    search_from = token_index + token_raw.len();
+                    }
 
-                    let token = token_raw.trim_end_matches([':', ',', '.', '!', '?', '—', '–', ')', ']', '>', '"', '\'']);
+                    // Trim leading and trailing punctuation that commonly wraps mentions
+                    let token_leading = token_raw
+                        .trim_start_matches(['(', '[', '{', '<', '"', '\'']);
+                    let mut token = token_leading
+                        .trim_end_matches([':', ',', '.', ';', '!', '?', '…', '—', '–', ')', ']', '}', '>', '"', '\'']);
+                    // Strip possessive suffixes like @ai's or @ai’s
+                    if let Some(t) = token.strip_suffix("'s").or_else(|| token.strip_suffix("’s")) {
+                        token = t;
+                    }
+
+                    // Only consider tokens that now begin with '@'
+                    if !token.starts_with('@') {
+                        debug!(token_idx, token = token, token_raw = token_raw, "Skip: token not starting with @ after trim");
+                        continue;
+                    }
+
                     let (normalized_mention, routing) = classify_mention_token(token, dev_id_opt);
                     let key = normalized_mention.to_lowercase();
-                    info!(token_raw = %token_raw, token = %token, normalized = %normalized_mention, key = %key, route = ?routing, "Checking mention token");
-                    if let Some(entry) = registry_for_handler
+                    debug!(token = token, dev_id_opt = dev_id_opt, key = key);
+                    info!(token_idx, token_raw = %token_raw, token = %token, normalized = %normalized_mention, key = %key, route = ?routing, "Checking mention token");
+                    let var_name =  registry
                         .entry_by_mention(&key)
-                        .await
+                        .await;
+                    debug!(pass = var_name.is_some(), "Mention lookup (reg: {:#?})", registry);
+
+                    if let Some(entry) = var_name
                     {
                         let plugin_id = entry.spec.id.clone();
-                        info!(plugin = %plugin_id, token_index, "Mention matched");
+                        info!(token_idx, plugin = %plugin_id, "Mention matched");
                         // Use the FULL body as the prompt so earlier words are preserved
                         // (the AI can see the initiator and routing prefix as part of the message)
                         let args_source = body;
-                        match routing {
+
+                        // Evaluate gating; continue scanning if not allowed
+                        let blocked = match routing {
                             DevRouting::OtherDev => {
-                                info!(plugin = %plugin_id, "Ignoring mention targeted at different dev id");
+                                info!(token_idx, plugin = %plugin_id, reason = "other-dev", "Ignoring mention");
+                                true
                             }
                             DevRouting::Dev if !dev_active => {
-                                info!(plugin = %plugin_id, "Ignoring dev mention in prod mode");
+                                info!(token_idx, plugin = %plugin_id, reason = "dev-in-prod", "Ignoring mention");
+                                true
                             }
                             DevRouting::Prod if dev_active => {
-                                info!(plugin = %plugin_id, "Ignoring prod mention in dev mode");
+                                info!(token_idx, plugin = %plugin_id, reason = "prod-in-dev", "Ignoring mention");
+                                true
                             }
                             _ if entry
                                 .spec
@@ -402,29 +422,40 @@ async fn main() -> Result<()> {
                                 .unwrap_or_else(|| entry.plugin.dev_only())
                                 && !dev_active =>
                             {
-                                info!(plugin = %plugin_id, "Ignoring dev-only plugin in prod mode");
+                                info!(token_idx, plugin = %plugin_id, reason = "dev-only-in-prod", "Ignoring mention");
+                                true
                             }
-                            _ if !registry_for_handler.is_enabled(&plugin_id).await => {
-                                info!(plugin = %plugin_id, "Plugin disabled");
+                            _ if !registry.is_enabled(&plugin_id).await => {
+                                info!(token_idx, plugin = %plugin_id, reason = "disabled", "Ignoring mention");
+                                true
                             }
-                            DevRouting::Prod | DevRouting::Dev => {
-                                let ctx = PluginContext {
-                                    client: client.clone(),
-                                    room: room.clone(),
-                                    dev_active,
-                                    dev_id: dev_id_for_handler.clone(),
-                                    registry: Arc::clone(&registry_for_handler),
-                                    history_dir: Arc::clone(&history_dir_for_handler),
-                                };
-                                if let Err(e) = entry.plugin.run(&ctx, args_source, &entry.spec).await {
-                                    warn!(error = %e, plugin = %plugin_id, "Plugin failed");
-                                } else {
-                                    triggered_plugins.insert(plugin_id.clone());
-                                }
-                            }
+                            DevRouting::Prod | DevRouting::Dev => false,
+                        };
+
+                        if blocked {
+                            continue; // keep scanning for a later valid mention
                         }
-                        break; // handle only first matched mention
+
+                        let ctx = PluginContext {
+                            client: client.clone(),
+                            room: room.clone(),
+                            dev_active,
+                            dev_id: dev_id.clone(),
+                            registry: Arc::clone(&registry),
+                            history_dir: Arc::clone(&history_dir),
+                        };
+                        if let Err(e) = entry.plugin.run(&ctx, args_source, &entry.spec).await {
+                            warn!(error = %e, plugin = %plugin_id, "Plugin failed");
+                        } else {
+                            triggered_plugins.insert(plugin_id.clone());
+                            executed_mention = true;
+                        }
+                        // Handle only the first mention that actually targets this instance
+                        break;
                     }
+                }
+                if !executed_mention {
+                    debug!("No actionable mention found in message");
                 }
             }
         }
@@ -435,15 +466,15 @@ async fn main() -> Result<()> {
         };
 
         // Passive plugins (e.g., relay)
-        let passive_entries = registry_for_handler.entries().await;
+        let passive_entries = registry.entries().await;
         if !passive_entries.is_empty() {
             let base_ctx = PluginContext {
                 client: client.clone(),
                 room: room.clone(),
                 dev_active,
-                dev_id: dev_id_for_handler.clone(),
-                registry: Arc::clone(&registry_for_handler),
-                history_dir: Arc::clone(&history_dir_for_handler),
+                dev_id: dev_id.clone(),
+                registry: Arc::clone(&registry),
+                history_dir: Arc::clone(&history_dir),
             };
 
             for (plugin_id, entry) in passive_entries {
@@ -461,7 +492,7 @@ async fn main() -> Result<()> {
                 {
                     continue;
                 }
-                if !registry_for_handler.is_enabled(&plugin_id).await {
+                if !registry.is_enabled(&plugin_id).await {
                     continue;
                 }
                 if let Err(e) = entry
@@ -539,7 +570,8 @@ fn load_config(path: &PathBuf) -> Result<BotConfig> {
 }
 
 fn print_mode_banner(dev_active: bool, dev_id: Option<&str>) {
-    let is_tty = std::io::stdout().is_terminal();
+    let is_tty = std::io::stderr().is_terminal()
+        || std::env::var("FORCE_COLOR").is_ok_and(|v| !v.is_empty());
     let (title, sub, color) = if dev_active {
         let hint = dev_id.map_or_else(
             || "Send !dev.command targets this instance".to_owned(),
@@ -562,11 +594,11 @@ fn print_mode_banner(dev_active: bool, dev_id: Option<&str>) {
         )
     };
     if is_tty {
-        println!(
+        eprintln!(
             "{color}==============================\n  {title}\n  {sub}\n==============================\x1b[0m"
         );
     } else {
-        println!(
+        eprintln!(
             "==============================\n  {title}\n  {sub}\n=============================="
         );
     }
@@ -632,7 +664,7 @@ async fn handle_sas(sas: SasVerification, auto_confirm: bool) {
                     .map(|em| em.description)
                     .collect::<Vec<_>>()
                     .join(" ");
-                println!("SAS emojis: {emoji_string}\nSAS names:  {descriptions}");
+                debug!("SAS emojis: {emoji_string}\nSAS names:  {descriptions}");
                 if auto_confirm && let Err(e) = sas.confirm().await {
                     warn!(error = %e, "Failed to confirm SAS");
                 }
@@ -698,6 +730,7 @@ fn classify_command_token(cmd: &str, dev_id: Option<&str>) -> (String, DevRoutin
 }
 
 fn classify_mention_token(token: &str, dev_id: Option<&str>) -> (String, DevRouting) {
+    debug!(token = token, dev_id = ?dev_id);
     if let Some(stripped) = token.strip_prefix('@')
         && let Some((dev_tag, remainder)) = stripped.split_once('.')
     {

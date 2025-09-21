@@ -7,6 +7,7 @@ use serde::Deserialize;
 use plugin_core::factory::PluginFactory;
 use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, send_text};
 
+#[derive(Debug)]
 pub struct EchoPlugin;
 
 impl PluginFactory for EchoPlugin {
@@ -30,6 +31,7 @@ impl PluginFactory for EchoPlugin {
     }
 }
 
+#[derive(Debug)]
 pub struct EchoTool;
 
 #[derive(Debug, Clone, Deserialize, Default)]

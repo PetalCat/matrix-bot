@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use plugin_core::factory::PluginFactory;
 use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, send_text};
 
+#[derive(Debug)]
 pub struct PingPlugin;
 
 impl PluginFactory for PingPlugin {
@@ -27,6 +28,7 @@ impl PluginFactory for PingPlugin {
     }
 }
 
+#[derive(Debug)]
 pub struct Ping;
 
 #[async_trait]
