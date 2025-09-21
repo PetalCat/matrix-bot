@@ -1,3 +1,4 @@
+mod logging;
 mod plugins;
 
 use core::time::Duration;
@@ -24,9 +25,11 @@ use matrix_sdk::{
         },
     },
 };
-use plugin_core::{PluginContext, PluginSpec, RoomMessageMeta, truncate};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+
+use crate::logging::init_tracing;
+use plugin_core::{PluginContext, PluginSpec, RoomMessageMeta, truncate};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -120,6 +123,7 @@ pub(crate) struct RoomCluster {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
+
     // Load .env if present so clap can pick up env vars.
     let _ = dotenvy::dotenv();
     let args = Args::parse();
@@ -519,14 +523,6 @@ async fn main() -> Result<()> {
         .sync(settings)
         .await
         .map_err(|e| anyhow!("sync terminated: {e}"))
-}
-
-fn init_tracing() {
-    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info,matrix_sdk=info".to_owned());
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .try_init();
 }
 
 fn load_config(path: &PathBuf) -> Result<BotConfig> {
