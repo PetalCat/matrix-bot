@@ -47,6 +47,7 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
         merge_default_spec(&mut specs, p.spec());
     }
 
+    // Create registry and determine plugin config dir early.
     let registry = Arc::new(PluginRegistry::new());
     let default_dir = if std::path::Path::new("./plugins").exists() {
         "./plugins".to_owned()
@@ -57,15 +58,37 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
         .or_else(|_| std::env::var("TOOLS_DIR"))
         .unwrap_or(default_dir);
 
+    // Discover and register WASM plugins (if feature enabled) before applying config.
+    register_wasm_dynamic_plugins(&registry).await;
+
+    // Merge per-plugin file config for already-registered entries (e.g., WASM plugins)
+    for (id, entry) in registry.entries().await {
+        if let Some(file_cfg) = load_plugin_config(&plugins_dir, &id) {
+            let mut merged_spec = entry.spec.clone();
+            merged_spec.config = merge_yaml(file_cfg, merged_spec.config);
+            // re-register with merged spec
+            registry.register(merged_spec, entry.plugin).await;
+        }
+    }
+
+    // Register configured plugins (native or WASM), merging per-plugin file config.
     for mut spec in specs {
-        let Some(plugin) = plugins.get(spec.id.as_str()) else {
+        let plugin_arc: Option<Arc<dyn Plugin + Send + Sync>> =
+            if let Some(p) = plugins.get(spec.id.as_str()) {
+                Some(Arc::clone(p))
+            } else if let Some(existing) = registry.entry(&spec.id).await {
+                Some(existing.plugin)
+            } else {
+                None
+            };
+        let Some(plugin) = plugin_arc else {
             warn!("Unknown plugin ID: {}", spec.id);
             continue;
         };
         if let Some(file_cfg) = load_plugin_config(&plugins_dir, spec.id.as_str()) {
             spec.config = merge_yaml(file_cfg, spec.config);
         }
-        registry.register(spec, Arc::clone(plugin)).await;
+        registry.register(spec, plugin).await;
     }
 
     registry
@@ -153,3 +176,23 @@ fn merge_default_spec(specs: &mut Vec<PluginSpec>, default: PluginSpec) {
         specs.push(default);
     }
 }
+
+#[cfg(feature = "wasm-plugins")]
+async fn register_wasm_dynamic_plugins(registry: &PluginRegistry) {
+    let default_dir = if std::path::Path::new("./plugins").exists() {
+        "./plugins".to_owned()
+    } else {
+        "./tools".to_owned()
+    };
+    let plugins_dir = std::env::var("WASM_PLUGINS_DIR")
+        .or_else(|_| std::env::var("PLUGINS_DIR"))
+        .unwrap_or(default_dir);
+
+    if let Err(e) = crate::wasm_plugins::register_wasm_plugins_in_dir(registry, &plugins_dir).await
+    {
+        warn!(error = %e, "Failed to register WASM plugins");
+    }
+}
+
+#[cfg(not(feature = "wasm-plugins"))]
+async fn register_wasm_dynamic_plugins(_registry: &PluginRegistry) {}

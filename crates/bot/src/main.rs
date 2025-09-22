@@ -1,5 +1,7 @@
 mod logging;
 mod plugins;
+#[cfg(feature = "wasm-plugins")]
+mod wasm_plugins;
 
 use core::time::Duration;
 use std::{collections::HashSet, fs, io::IsTerminal as _, path::PathBuf, sync::Arc};

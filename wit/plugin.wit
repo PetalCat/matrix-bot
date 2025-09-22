@@ -1,0 +1,69 @@
+package matrix:plugin@0.1.0;
+
+/// Plugin interface exported by guest components.
+interface plugin {
+    /// Invocation request passed to `plugin.run`.
+    record run-request {
+        /// Argument tail after the trigger token.
+        args: string,
+        /// Matrix room id where the trigger happened (e.g. "!abc:example.org").
+        room-id: string,
+        /// Matrix user id of sender (e.g. "@alice:example.org").
+        sender: string,
+        /// Is the host running in development mode?
+        dev-active: bool,
+        /// Optional developer id used for dev-targeted commands.
+        dev-id: option<string>,
+    }
+
+    /// Plugin specification returned by guest components.
+    record plugin-spec {
+        id: string,
+        enabled: bool,
+        dev-only: option<bool>,
+        triggers: triggers,
+        /// Plugin-specific configuration as YAML text (host may merge/override).
+        config-yaml: string,
+    }
+
+    /// Command and mention trigger tokens.
+    record triggers {
+        commands: list<string>,
+        mentions: list<string>,
+    }
+
+    /// Return default spec (id, enabled, triggers, config-yaml).
+    get-spec: func() -> plugin-spec;
+    /// Short help text for the plugin.
+    help: func() -> string;
+    /// Run the plugin for a trigger. Return empty string on success or an
+    /// error message on failure.
+    run: func(req: run-request) -> string;
+}
+
+/// Host imports usable by guest components.
+interface host-io {
+    /// Send a plain text message to the current room. Return empty string on success or
+    /// an error message on failure.
+    send-text: func(text: string) -> string;
+}
+
+/// The component world exposed to the host.
+world matrix-plugin {
+    export plugin;
+    import host-io;
+
+    /// Provide common WASI Preview 2 imports for guest components.
+    import wasi:cli/environment;
+    import wasi:cli/stdout;
+    import wasi:cli/stderr;
+
+    import wasi:clocks/wall-clock;
+    import wasi:random/random;
+
+    import wasi:filesystem/types;
+    import wasi:filesystem/preopens;
+
+    import wasi:io/streams;
+    import wasi:io/poll;
+}
