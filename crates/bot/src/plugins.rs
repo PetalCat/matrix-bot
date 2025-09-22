@@ -1,45 +1,22 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{BotConfig, RoomCluster};
-use plugin_core::{PluginRegistry, PluginSpec, PluginTriggers, factory::PluginFactory};
-use plugin_relay::{RelayConfig, RelayPlugin};
+use plugin_core::{Plugin, PluginRegistry, PluginSpec, PluginTriggers};
+use plugin_relay::{Relay, RelayConfig};
 use tracing::warn;
 
-// TODO: Why have both FactoryRegistry and PluginRegistry? Can we merge them?
-struct FactoryRegistry {
-    factories: HashMap<String, Box<dyn PluginFactory + Send + Sync>>,
-}
-
-impl FactoryRegistry {
-    fn new() -> Self {
-        Self {
-            factories: HashMap::new(),
-        }
-    }
-
-    fn with_factory<F: PluginFactory + Send + Sync + 'static>(
-        mut self,
-        name: impl Into<String>,
-        factory: F,
-    ) -> Self {
-        self.factories.insert(name.into(), Box::new(factory));
-        self
-    }
-
-    fn get(&self, name: &str) -> Option<&(dyn PluginFactory + Send + Sync)> {
-        self.factories.get(name).map(|f| &**f)
-    }
-}
-
 pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
-    let factories = FactoryRegistry::new()
-        .with_factory("ping", plugin_ping::PingPlugin)
-        .with_factory("mode", plugin_mode::ModePlugin)
-        .with_factory("diag", plugin_diagnostics::DiagnosticsPlugin)
-        .with_factory("tools", plugin_tools_manager::ToolsManagerPlugin)
-        .with_factory("ai", plugin_ai::AiPlugin)
-        .with_factory("echo", plugin_echo::EchoPlugin)
-        .with_factory("relay", RelayPlugin);
+    // Build a map of plugin id -> instance. Plugins are stateless; one instance is fine.
+    #[rustfmt::skip]
+    let plugins: HashMap<&'static str, Arc<dyn Plugin + Send + Sync>> = HashMap::from([
+        ("ping", Arc::new(plugin_ping::Ping) as Arc<dyn Plugin + Send + Sync>),
+        ("mode", Arc::new(plugin_mode::ModeTool) as Arc<dyn Plugin + Send + Sync>),
+        ("diag", Arc::new(plugin_diagnostics::DiagTool) as Arc<dyn Plugin + Send + Sync>),
+        ("tools", Arc::new(plugin_tools_manager::ToolsManager) as Arc<dyn Plugin + Send + Sync>),
+        ("ai", Arc::new(plugin_ai::AiTool) as Arc<dyn Plugin + Send + Sync>),
+        ("echo", Arc::new(plugin_echo::EchoTool) as Arc<dyn Plugin + Send + Sync>),
+        ("relay", Arc::new(Relay::default()) as Arc<dyn Plugin + Send + Sync>),
+    ]);
 
     let mut specs = config.plugins.clone().unwrap_or_default();
 
@@ -51,17 +28,23 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
             caption_media: config.caption_media,
         };
         let config_value = serde_yaml::to_value(relay_config).unwrap_or_default();
-        specs.push(PluginSpec {
+        let mut relay_spec = PluginSpec {
             id: "relay".to_owned(),
             enabled: true,
             dev_only: None,
             triggers: PluginTriggers::default(),
             config: config_value,
-        });
+        };
+        // If the relay plugin provides defaults, merge them first (for future-proofing).
+        if let Some(p) = plugins.get("relay") {
+            relay_spec.triggers = p.spec().triggers;
+            // keep our injected config_value overriding default
+        }
+        specs.push(relay_spec);
     }
-
-    for factory in factories.factories.values() {
-        factory.register_defaults(&mut specs);
+    // Merge defaults from each plugin implementation, without duplicating IDs.
+    for p in plugins.values() {
+        merge_default_spec(&mut specs, p.spec());
     }
 
     let registry = Arc::new(PluginRegistry::new());
@@ -75,15 +58,14 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
         .unwrap_or(default_dir);
 
     for mut spec in specs {
-        let Some(factory) = factories.get(spec.id.as_str()) else {
+        let Some(plugin) = plugins.get(spec.id.as_str()) else {
             warn!("Unknown plugin ID: {}", spec.id);
             continue;
         };
-        let plugin = factory.build();
         if let Some(file_cfg) = load_plugin_config(&plugins_dir, spec.id.as_str()) {
             spec.config = merge_yaml(file_cfg, spec.config);
         }
-        registry.register(spec, plugin).await;
+        registry.register(spec, Arc::clone(plugin)).await;
     }
 
     registry
@@ -139,5 +121,35 @@ fn load_plugin_config(root: &str, id: &str) -> Option<serde_yaml::Value> {
             }
             None
         }
+    }
+}
+
+fn merge_default_spec(specs: &mut Vec<PluginSpec>, default: PluginSpec) {
+    if let Some(existing) = specs.iter_mut().find(|s| s.id == default.id) {
+        // Merge triggers: add any commands/mentions not present
+        for cmd in default.triggers.commands {
+            if !existing
+                .triggers
+                .commands
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(&cmd))
+            {
+                existing.triggers.commands.push(cmd);
+            }
+        }
+        for mention in default.triggers.mentions {
+            if !existing
+                .triggers
+                .mentions
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(&mention))
+            {
+                existing.triggers.mentions.push(mention);
+            }
+        }
+        // Do not override existing.config here; file config will merge later.
+        // Respect existing.enabled/dev_only as user-provided or file-provided.
+    } else {
+        specs.push(default);
     }
 }

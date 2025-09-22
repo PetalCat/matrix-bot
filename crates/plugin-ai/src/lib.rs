@@ -3,7 +3,7 @@ use std::{
     borrow::ToOwned,
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
-    sync::{Arc, Once},
+    sync::Once,
 };
 
 use anyhow::Result;
@@ -25,7 +25,6 @@ use matrix_sdk::{
 };
 use tracing::{debug, info, warn};
 
-use plugin_core::factory::PluginFactory;
 use plugin_core::{
     Plugin, PluginContext, PluginSpec, PluginTriggers, RoomMessageMeta, sanitize_line, send_text,
     str_config, truncate,
@@ -36,53 +35,16 @@ pub struct AiPlugin;
 
 static HISTORY_BACKFILL_ONCE: Once = Once::new();
 
-impl PluginFactory for AiPlugin {
-    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
-        if let Some(spec) = specs.iter_mut().find(|t| t.id == "ai") {
-            if !spec
-                .triggers
-                .commands
-                .iter()
-                .any(|cmd| cmd.eq_ignore_ascii_case("!ai"))
-            {
-                spec.triggers.commands.push("!ai".into());
-            }
-
-            if let Some(handle) = ai_env_handle()
-                && !spec
-                    .triggers
-                    .mentions
-                    .iter()
-                    .any(|mention| mention.eq_ignore_ascii_case(&handle))
-            {
-                debug!(
-                    handle = handle,
-                    "AI plugin spec found; injecting handle mention from AI_HANDLE env"
-                );
-                spec.triggers.mentions.push(handle);
-            }
-        } else {
-            debug!("AI plugin spec not found; injecting default configuration");
-
-            let mut triggers = PluginTriggers {
-                commands: vec!["!ai".into()],
-                mentions: vec!["@claire".into()],
-            };
-            if let Some(handle) = ai_env_handle() {
-                triggers.mentions.push(handle);
-            }
-            specs.push(PluginSpec {
-                id: "ai".into(),
-                enabled: true,
-                dev_only: None,
-                triggers,
-                config: serde_yaml::Value::default(),
-            });
+impl AiPlugin {
+    fn base_triggers() -> PluginTriggers {
+        let mut triggers = PluginTriggers {
+            commands: vec!["!ai".into()],
+            mentions: vec!["@claire".into()],
+        };
+        if let Some(handle) = ai_env_handle() {
+            triggers.mentions.push(handle);
         }
-    }
-
-    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
-        Arc::new(AiTool)
+        triggers
     }
 }
 
@@ -148,6 +110,15 @@ impl Plugin for AiTool {
     }
     fn help(&self) -> &'static str {
         "Ask the AI: !ai <prompt>"
+    }
+    fn spec(&self) -> PluginSpec {
+        PluginSpec {
+            id: "ai".into(),
+            enabled: true,
+            dev_only: None,
+            triggers: AiPlugin::base_triggers(),
+            config: serde_yaml::Value::default(),
+        }
     }
     fn wants_own_messages(&self) -> bool {
         true

@@ -1,34 +1,10 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use async_trait::async_trait;
 
-use plugin_core::factory::PluginFactory;
 use plugin_core::{Plugin, PluginContext, PluginRegistry, PluginSpec, PluginTriggers, send_text};
 
 #[derive(Debug)]
 pub struct ToolsManagerPlugin;
-
-impl PluginFactory for ToolsManagerPlugin {
-    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
-        if !specs.iter().any(|t| t.id == "tools") {
-            specs.push(PluginSpec {
-                id: "tools".to_owned(),
-                enabled: true,
-                dev_only: None,
-                triggers: PluginTriggers {
-                    commands: vec!["!tools".to_owned(), "!plugins".to_owned()],
-                    mentions: vec![],
-                },
-                config: serde_yaml::Value::default(),
-            });
-        }
-    }
-
-    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
-        Arc::new(ToolsManager)
-    }
-}
 
 #[derive(Debug)]
 pub struct ToolsManager;
@@ -40,6 +16,18 @@ impl Plugin for ToolsManager {
     }
     fn help(&self) -> &'static str {
         "Manage plugins: !tools list | enable <id> | disable <id>"
+    }
+       fn spec(&self) -> PluginSpec {
+        PluginSpec {
+            id: "tools".to_owned(),
+            enabled: true,
+            dev_only: None,
+            triggers: PluginTriggers {
+                commands: vec!["!tools".to_owned(), "!plugins".to_owned()],
+                mentions: vec![],
+            },
+            config: serde_yaml::Value::default(),
+        }
     }
     async fn run(&self, ctx: &PluginContext, args: &str, _spec: &PluginSpec) -> Result<()> {
         let registry: &PluginRegistry = &ctx.registry;
