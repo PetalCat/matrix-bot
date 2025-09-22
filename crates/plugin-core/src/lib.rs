@@ -1,5 +1,3 @@
-pub mod factory;
-
 use core::fmt::Debug;
 use std::{
     borrow::ToOwned,
@@ -38,6 +36,9 @@ pub struct RoomMessageMeta<'a> {
 pub trait Plugin: Send + Sync + Debug {
     fn id(&self) -> &'static str;
     fn help(&self) -> &'static str;
+    /// Return this plugin's default specifications to be merged at startup.
+    fn spec(&self) -> PluginSpec;
+
     fn dev_only(&self) -> bool {
         false
     }

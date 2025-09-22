@@ -21,7 +21,6 @@ use matrix_sdk::{
     },
 };
 use mime::Mime;
-use plugin_core::factory::PluginFactory;
 use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, RoomMessageMeta, truncate};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -29,26 +28,8 @@ use tracing::{info, warn};
 #[derive(Debug)]
 pub struct RelayPlugin;
 
-impl PluginFactory for RelayPlugin {
-    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
-        if !specs.iter().any(|s| s.id == "relay") {
-            specs.push(PluginSpec {
-                id: "relay".to_owned(),
-                enabled: true,
-                dev_only: None,
-                triggers: PluginTriggers::default(),
-                config: serde_yaml::Value::default(),
-            });
-        }
-    }
-
-    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
-        Arc::new(Relay::default())
-    }
-}
-
 #[derive(Default, Debug)]
-struct Relay {
+pub struct Relay {
     plan: RwLock<Option<Arc<RelayPlan>>>,
 }
 
@@ -80,6 +61,16 @@ impl Plugin for Relay {
 
     async fn run(&self, _ctx: &PluginContext, _args: &str, _spec: &PluginSpec) -> Result<()> {
         Ok(())
+    }
+
+       fn spec(&self) -> PluginSpec {
+        PluginSpec {
+            id: "relay".to_owned(),
+            enabled: true,
+            dev_only: None,
+            triggers: PluginTriggers::default(),
+            config: serde_yaml::Value::default(),
+        }
     }
 
     async fn on_room_message(

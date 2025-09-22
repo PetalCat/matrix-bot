@@ -1,34 +1,10 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use async_trait::async_trait;
 
-use plugin_core::factory::PluginFactory;
 use plugin_core::{Plugin, PluginContext, PluginSpec, PluginTriggers, send_text};
 
 #[derive(Debug)]
 pub struct ModePlugin;
-
-impl PluginFactory for ModePlugin {
-    fn register_defaults(&self, specs: &mut Vec<PluginSpec>) {
-        if !specs.iter().any(|t| t.id == "mode") {
-            specs.push(PluginSpec {
-                id: "mode".into(),
-                enabled: true,
-                dev_only: None,
-                triggers: PluginTriggers {
-                    commands: vec!["!mode".into()],
-                    mentions: vec![],
-                },
-                config: serde_yaml::Value::default(),
-            });
-        }
-    }
-
-    fn build(&self) -> Arc<dyn Plugin + Send + Sync> {
-        Arc::new(ModeTool)
-    }
-}
 
 #[derive(Debug)]
 pub struct ModeTool;
@@ -40,6 +16,18 @@ impl Plugin for ModeTool {
     }
     fn help(&self) -> &'static str {
         "Show current mode (dev/prod) and how to target it."
+    }
+       fn spec(&self) -> PluginSpec {
+        PluginSpec {
+            id: "mode".into(),
+            enabled: true,
+            dev_only: None,
+            triggers: PluginTriggers {
+                commands: vec!["!mode".into()],
+                mentions: vec![],
+            },
+            config: serde_yaml::Value::default(),
+        }
     }
     async fn run(&self, ctx: &PluginContext, _args: &str, _spec: &PluginSpec) -> Result<()> {
         let mode = if ctx.dev_active { "dev" } else { "prod" };
