@@ -1,0 +1,30 @@
+[package]
+name = "ping-component"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Example Matrix Ping Bot plugin compiled as a WASM Component"
+repository = "https://example.invalid/matrix-ping-bot"
+
+[lib]
+# Required for producing a WebAssembly component artifact.
+crate-type = ["cdylib"]
+
+# Build-time metadata for cargo-component.
+# This tells cargo-component where to find the WIT package and which world to export.
+[package.metadata.component]
+# The WIT package location relative to this crate.
+wit = { path = "../../../wit" }
+# Export the 'matrix-plugin' world from the matrix:plugin package.
+world = "matrix-plugin"
+
+[dependencies]
+# No dependencies required for the minimal example; the Rust bindings are generated
+# by cargo-component from the WIT world specified above.
+
+[profile.release]
+# Reasonable defaults for small and fast WASM output.
+lto = true
+opt-level = "s"
+codegen-units = 1
+strip = "symbols"

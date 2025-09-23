@@ -145,3 +145,50 @@ clusters:
   - Copy `matrix-ping-bot.service.example` to `/etc/systemd/system/matrix-ping-bot.service` and edit paths as needed.
   - Create `/etc/matrix-ping-bot.env` with e.g. `MATRIX_HOMESERVER=...`, `MATRIX_USERNAME=...`, `MATRIX_PASSWORD=...`.
   - `sudo systemctl daemon-reload && sudo systemctl enable --now matrix-ping-bot`.
+
+## WASM Plugins (experimental)
+
+This project can discover and load external plugins compiled as WebAssembly components. The host uses Wasmtime with WASI Preview 2 and a WIT-defined interface for plugin I/O.
+
+- WIT contract location: `wit/plugin.wit`
+- World: `matrix-plugin`
+- Guest exports:
+  - `plugin.get-spec() -> plugin-spec`
+  - `plugin.help() -> string`
+  - `plugin.run(run-request) -> result<(), string>`
+- Host imports:
+  - `host-io.send-text(text: string) -> result<(), string>`
+  - WASI Preview 2 (stdio, env, clocks, random, filesystem, streams)
+
+### Enable and run
+
+- Build/run with feature flag:
+```sh
+cargo run --features wasm-plugins -- [your usual args]
+```
+
+- Discovery directory:
+  - Set `WASM_PLUGINS_DIR` to a directory containing `.wasm` or `.cwasm` components.
+  - Fallback order if unset: `PLUGINS_DIR`, then `./plugins`, then `./tools`.
+  - Each discovered file registers a plugin whose id is derived from the file name (e.g., `plugins/echo.wasm` => id `echo`).
+
+- Per-plugin YAML configuration (optional):
+  - Place YAML at: `<PLUGINS_DIR>/<plugin_id>/config.yaml`
+  - This file is merged into the plugin’s default config (as provided by the component’s `get-spec`).
+
+- Triggers:
+  - Commands and mentions can be provided by the component via `get-spec`, or configured in your bot config and merged at startup.
+
+- Runtime control:
+  - Use the built-in tools manager: `!tools list | enable <id> | disable <id>`
+
+### Authoring a plugin
+
+- Target: WebAssembly component using WASI Preview 2.
+- Implement the `matrix-plugin` world from `wit/plugin.wit`:
+  - Return defaults from `plugin.get-spec` (`id`, `enabled`, `dev-only`, `triggers`, `config-yaml`).
+  - Provide a short help string from `plugin.help`.
+  - Implement `plugin.run` to handle a trigger; use `host-io.send-text` to post replies.
+
+Notes:
+- This feature set is evolving. If the feature is not enabled or a component is not fully wired, the bot will register the plugin but may emit a placeholder message on invocation.
