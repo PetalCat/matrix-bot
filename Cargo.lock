@@ -2052,6 +2052,7 @@ dependencies = [
  "plugin-diagnostics",
  "plugin-echo",
  "plugin-mode",
+ "plugin-phrases",
  "plugin-ping",
  "plugin-relay",
  "plugin-tools-manager",
@@ -2719,6 +2720,19 @@ dependencies = [
  "anyhow",
  "async-trait",
  "plugin-core",
+ "serde_yaml",
+]
+
+[[package]]
+name = "plugin-phrases"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "matrix-sdk",
+ "plugin-core",
+ "rand 0.8.5",
+ "serde",
  "serde_yaml",
 ]
 

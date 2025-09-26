@@ -111,13 +111,13 @@ impl Plugin for AiTool {
     fn help(&self) -> &'static str {
         "Ask the AI: !ai <prompt>"
     }
-    fn spec(&self) -> PluginSpec {
+    fn spec(&self, config: serde_yaml::Value) -> PluginSpec {
         PluginSpec {
             id: "ai".into(),
             enabled: true,
             dev_only: None,
             triggers: AiPlugin::base_triggers(),
-            config: serde_yaml::Value::default(),
+            config,
         }
     }
     fn wants_own_messages(&self) -> bool {

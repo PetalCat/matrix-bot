@@ -26,7 +26,7 @@ impl Plugin for EchoTool {
     fn help(&self) -> &'static str {
         "Echo text back. Config: prefix, uppercase"
     }
-    fn spec(&self) -> PluginSpec {
+    fn spec(&self, config: serde_yaml::Value) -> PluginSpec {
         PluginSpec {
             id: "echo".into(),
             enabled: true,
@@ -35,7 +35,7 @@ impl Plugin for EchoTool {
                 commands: vec!["!echo".into()],
                 mentions: vec![],
             },
-            config: serde_yaml::Value::default(),
+            config,
         }
     }
     async fn run(&self, ctx: &PluginContext, args: &str, spec: &PluginSpec) -> Result<()> {

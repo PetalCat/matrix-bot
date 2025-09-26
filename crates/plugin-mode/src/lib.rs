@@ -17,7 +17,7 @@ impl Plugin for ModeTool {
     fn help(&self) -> &'static str {
         "Show current mode (dev/prod) and how to target it."
     }
-       fn spec(&self) -> PluginSpec {
+    fn spec(&self, config: serde_yaml::Value) -> PluginSpec {
         PluginSpec {
             id: "mode".into(),
             enabled: true,
@@ -26,7 +26,7 @@ impl Plugin for ModeTool {
                 commands: vec!["!mode".into()],
                 mentions: vec![],
             },
-            config: serde_yaml::Value::default(),
+            config,
         }
     }
     async fn run(&self, ctx: &PluginContext, _args: &str, _spec: &PluginSpec) -> Result<()> {

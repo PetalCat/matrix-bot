@@ -63,13 +63,13 @@ impl Plugin for Relay {
         Ok(())
     }
 
-       fn spec(&self) -> PluginSpec {
+    fn spec(&self, config: serde_yaml::Value) -> PluginSpec {
         PluginSpec {
             id: "relay".to_owned(),
             enabled: true,
             dev_only: None,
             triggers: PluginTriggers::default(),
-            config: serde_yaml::Value::default(),
+            config,
         }
     }
 

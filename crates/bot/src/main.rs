@@ -348,6 +348,7 @@ async fn main() -> Result<()> {
                                 dev_id: dev_id.clone(),
                                 registry: Arc::clone(&registry),
                                 history_dir: Arc::clone(&history_dir),
+                                trigger: Some(normalized_cmd.clone()),
                             };
                             if let Err(e) = entry.plugin.run(&ctx, &args_clean, &entry.spec).await {
                                 warn!(error = %e, plugin = %plugin_id, "Plugin failed");
@@ -443,6 +444,7 @@ async fn main() -> Result<()> {
                             dev_id: dev_id.clone(),
                             registry: Arc::clone(&registry),
                             history_dir: Arc::clone(&history_dir),
+                            trigger: None,
                         };
                         if let Err(e) = entry.plugin.run(&ctx, args_source, &entry.spec).await {
                             warn!(error = %e, plugin = %plugin_id, "Plugin failed");
@@ -475,6 +477,7 @@ async fn main() -> Result<()> {
                 dev_id: dev_id.clone(),
                 registry: Arc::clone(&registry),
                 history_dir: Arc::clone(&history_dir),
+                trigger: None,
             };
 
             for (plugin_id, entry) in passive_entries {

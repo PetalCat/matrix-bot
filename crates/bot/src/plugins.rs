@@ -9,7 +9,7 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
     // Build a map of plugin id -> instance. Plugins are stateless; one instance is fine.
     #[rustfmt::skip]
     let plugins: HashMap<&'static str, Arc<dyn Plugin + Send + Sync>> = HashMap::from([
-        ("ping", Arc::new(plugin_ping::Ping) as Arc<dyn Plugin + Send + Sync>),
+        ("phrases", Arc::new(plugin_phrases::Phrases) as Arc<dyn Plugin + Send + Sync>),
         ("mode", Arc::new(plugin_mode::ModeTool) as Arc<dyn Plugin + Send + Sync>),
         ("diag", Arc::new(plugin_diagnostics::DiagTool) as Arc<dyn Plugin + Send + Sync>),
         ("tools", Arc::new(plugin_tools_manager::ToolsManager) as Arc<dyn Plugin + Send + Sync>),
@@ -37,14 +37,17 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
         };
         // If the relay plugin provides defaults, merge them first (for future-proofing).
         if let Some(p) = plugins.get("relay") {
-            relay_spec.triggers = p.spec().triggers;
+            relay_spec.triggers = p.spec(serde_yaml::Value::default()).triggers;
             // keep our injected config_value overriding default
         }
         specs.push(relay_spec);
     }
     // Merge defaults from each plugin implementation, without duplicating IDs.
     for p in plugins.values() {
-        merge_default_spec(&mut specs, p.spec());
+        // Allow plugins to compute their default spec based on a provided config
+        // value. We supply an empty/default config here; any file-based plugin
+        // config found later via `load_plugin_config` will be merged afterwards.
+        merge_default_spec(&mut specs, p.spec(serde_yaml::Value::default()));
     }
 
     let registry = Arc::new(PluginRegistry::new());
@@ -57,15 +60,51 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
         .or_else(|_| std::env::var("TOOLS_DIR"))
         .unwrap_or(default_dir);
 
-    for mut spec in specs {
+    for spec in specs {
         let Some(plugin) = plugins.get(spec.id.as_str()) else {
             warn!("Unknown plugin ID: {}", spec.id);
             continue;
         };
+
+        // If a file config exists for this plugin, merge it with the spec.config,
+        // then ask the plugin to compute a spec based on that merged config.
+        // This allows plugins to derive triggers and other spec fields from
+        // their config.
         if let Some(file_cfg) = load_plugin_config(&plugins_dir, spec.id.as_str()) {
-            spec.config = merge_yaml(file_cfg, spec.config);
+            // If a file config exists for this plugin, merge it with the spec.config,
+            // then ask the plugin to compute a spec from that merged config.
+            let merged_cfg = merge_yaml(file_cfg, spec.config);
+            let mut computed_spec = plugin.spec(merged_cfg);
+
+            // Preserve explicit user-provided values from the original spec where appropriate.
+            // Keep the user-provided enabled flag and dev_only override if present.
+            computed_spec.enabled = spec.enabled;
+            if spec.dev_only.is_some() {
+                computed_spec.dev_only = spec.dev_only;
+            }
+
+            // Ensure the plugin id remains correct and respect any explicit trigger
+            // overrides provided in the original spec.
+            spec.id.clone_into(&mut computed_spec.id);
+            if !spec.triggers.commands.is_empty() || !spec.triggers.mentions.is_empty() {
+                computed_spec.triggers = spec.triggers.clone();
+            }
+
+            registry.register(computed_spec, Arc::clone(plugin)).await;
+        } else {
+            // No file config found: ask the plugin to compute a spec from the
+            // config already present in the spec (typically defaults).
+            let mut computed_spec = plugin.spec(spec.config.clone());
+            computed_spec.enabled = spec.enabled;
+            if spec.dev_only.is_some() {
+                computed_spec.dev_only = spec.dev_only;
+            }
+            spec.id.clone_into(&mut computed_spec.id);
+            if !spec.triggers.commands.is_empty() || !spec.triggers.mentions.is_empty() {
+                computed_spec.triggers = spec.triggers.clone();
+            }
+            registry.register(computed_spec, Arc::clone(plugin)).await;
         }
-        registry.register(spec, Arc::clone(plugin)).await;
     }
 
     registry

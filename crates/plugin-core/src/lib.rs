@@ -24,6 +24,7 @@ pub struct PluginContext {
     pub dev_id: Option<Arc<str>>,
     pub registry: Arc<PluginRegistry>,
     pub history_dir: Arc<PathBuf>,
+    pub trigger: Option<String>,
 }
 
 #[derive(Debug)]
@@ -36,8 +37,14 @@ pub struct RoomMessageMeta<'a> {
 pub trait Plugin: Send + Sync + Debug {
     fn id(&self) -> &'static str;
     fn help(&self) -> &'static str;
-    /// Return this plugin's default specifications to be merged at startup.
-    fn spec(&self) -> PluginSpec;
+    /// Return this plugin's [`PluginSpec`] given a configuration value.
+    ///
+    /// Plugins MUST implement this method. The bot will call it with either an
+    /// empty/default config when building defaults, or with a merged file config
+    /// when loading per-plugin config files. Implementations should compute any
+    /// triggers or other derived spec fields based on the provided `config` and
+    /// return the complete `PluginSpec`.
+    fn spec(&self, config: serde_yaml::Value) -> PluginSpec;
 
     fn dev_only(&self) -> bool {
         false

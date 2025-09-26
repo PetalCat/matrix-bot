@@ -19,7 +19,7 @@ impl Plugin for DiagTool {
     fn help(&self) -> &'static str {
         "Show encryption/session diagnostics."
     }
-    fn spec(&self) -> PluginSpec {
+    fn spec(&self, config: serde_yaml::Value) -> PluginSpec {
         PluginSpec {
             id: "diag".into(),
             enabled: true,
@@ -28,7 +28,7 @@ impl Plugin for DiagTool {
                 commands: vec!["!diag".into()],
                 mentions: vec![],
             },
-            config: serde_yaml::Value::default(),
+            config,
         }
     }
     async fn run(&self, ctx: &PluginContext, _args: &str, _spec: &PluginSpec) -> Result<()> {

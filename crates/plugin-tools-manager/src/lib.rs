@@ -17,7 +17,7 @@ impl Plugin for ToolsManager {
     fn help(&self) -> &'static str {
         "Manage plugins: !tools list | enable <id> | disable <id>"
     }
-       fn spec(&self) -> PluginSpec {
+    fn spec(&self, config: serde_yaml::Value) -> PluginSpec {
         PluginSpec {
             id: "tools".to_owned(),
             enabled: true,
@@ -26,7 +26,7 @@ impl Plugin for ToolsManager {
                 commands: vec!["!tools".to_owned(), "!plugins".to_owned()],
                 mentions: vec![],
             },
-            config: serde_yaml::Value::default(),
+            config,
         }
     }
     async fn run(&self, ctx: &PluginContext, args: &str, _spec: &PluginSpec) -> Result<()> {
