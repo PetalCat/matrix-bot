@@ -39,6 +39,7 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
         .with_factory("tools", plugin_tools_manager::ToolsManagerPlugin)
         .with_factory("ai", plugin_ai::AiPlugin)
         .with_factory("echo", plugin_echo::EchoPlugin)
+        .with_factory("gewn", plugin_gewn::GewnPlugin)
         .with_factory("relay", RelayPlugin);
 
     let mut specs = config.plugins.clone().unwrap_or_default();

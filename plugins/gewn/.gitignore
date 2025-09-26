@@ -1,0 +1,3 @@
+# Keep the images directory tracked but ignore actual media assets
+images/*
+!images/.gitkeep

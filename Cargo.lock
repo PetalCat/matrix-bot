@@ -2051,6 +2051,7 @@ dependencies = [
  "plugin-core",
  "plugin-diagnostics",
  "plugin-echo",
+ "plugin-gewn",
  "plugin-mode",
  "plugin-ping",
  "plugin-relay",
@@ -2710,6 +2711,22 @@ dependencies = [
  "plugin-core",
  "serde",
  "serde_yaml",
+]
+
+[[package]]
+name = "plugin-gewn"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "matrix-sdk",
+ "mime",
+ "plugin-core",
+ "rand 0.8.5",
+ "serde",
+ "serde_yaml",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
