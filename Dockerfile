@@ -19,8 +19,10 @@ WORKDIR /app
 # Copy Rust Binary
 COPY --from=rust-builder /usr/src/app/target/release/matrix-ping-bot /usr/local/bin/matrix-ping-bot
 
-# Create data directory
-RUN mkdir -p /data && useradd -r -u 10001 app && chown -R app:app /data /app
+# Create app user with home directory (needed for npm) and data directory
+RUN mkdir -p /data && \
+    useradd -r -u 10001 -m -d /home/app app && \
+    chown -R app:app /data /app /home/app
 
 USER app
 
