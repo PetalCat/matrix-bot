@@ -1,20 +1,11 @@
-version: "3.9"
 services:
-  matrix-ping-bot:
+  bot:
     build: .
-    image: matrix-ping-bot:local
-    container_name: matrix-ping-bot
     restart: unless-stopped
-    environment:
-      # Or use an env_file: .env
-      - MATRIX_HOMESERVER=${MATRIX_HOMESERVER}
-      - MATRIX_USERNAME=${MATRIX_USERNAME}
-      - MATRIX_PASSWORD=${MATRIX_PASSWORD}
-      - MATRIX_STORE=/data/store
-      - MATRIX_SESSION_FILE=/data/session.json
-      - MATRIX_CONFIG=/app/config.yaml
-      - RUST_LOG=${RUST_LOG:-info,matrix_sdk=info}
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./data:/data
-    command: ["--device-name","matrix-ping-bot"]
+      - ./config.docker.yaml:/app/config.yaml
+      - ./data:/app/data
+      # Mount .env if you have one, or comment out
+      - ./.env:/app/.env
+    environment:
+      - RUST_LOG=info,plugin_ai=debug

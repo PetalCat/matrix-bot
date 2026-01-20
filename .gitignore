@@ -13,4 +13,10 @@ data/
 # Build artifacts (if running from crate dir)
 /target/
 
+# Node.js (never commit these)
+node_modules/
+dist/
+package.json
+package-lock.json
+
 .DS_Store

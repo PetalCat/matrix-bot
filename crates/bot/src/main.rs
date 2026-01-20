@@ -85,6 +85,10 @@ struct Args {
     /// Instance mode override via env/flag: "dev" or "prod"
     #[arg(long, env = "MATRIX_MODE")]
     mode: Option<String>,
+
+    /// Run as an internal MCP server (e.g. "time") instead of the bot
+    #[arg(long)]
+    mcp_server: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -127,6 +131,11 @@ async fn main() -> Result<()> {
     // Load .env if present so clap can pick up env vars.
     let _ = dotenvy::dotenv();
     let args = Args::parse();
+
+    if let Some(tool_name) = args.mcp_server {
+        plugin_ai::run_mcp_server(&tool_name);
+        return Ok(());
+    }
 
     fs::create_dir_all(&args.store)
         .with_context(|| format!("creating store directory at {}", args.store.display()))?;

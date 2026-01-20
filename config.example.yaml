@@ -11,11 +11,24 @@
 clusters:
   - name: sample-pair
     rooms:
-      - "!roomIdA:example.org"   # or "#aliasA:example.org"
-      - "!roomIdB:example.org"   # or "#aliasB:example.org"
+      - "!roomIdA:example.org" # or "#aliasA:example.org"
+      - "!roomIdB:example.org" # or "#aliasB:example.org"
     # Optional overrides for this cluster
     # reupload_media: true
     # caption_media: true
+
+plugins:
+  - id: ai
+    # provider: "gemini" # or "openai" (default)
+    # model: "gemini-1.5-flash"
+    # pii_redaction: true # Redact sensitive data (emails, IPs, phones) before sending to LLM
+    # pii_ner: true # Use local AI to redact Names, Locations, and Orgs (heavy download!)
+    # mcp_servers:
+    #   time:
+    #     command: "cargo" # or "./matrix-ping-bot" in prod
+    #     args: ["run", "--", "--mcp-server", "time"]
+    #   filesystem:
+    #     command: "npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/directory"
 
   # - name: another-cluster
   #   rooms:

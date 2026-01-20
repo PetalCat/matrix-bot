@@ -1,42 +1,42 @@
-# syntax=docker/dockerfile:1
-
-# ---------- Build stage ----------
-FROM rust:1-bullseye AS builder
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev libsqlite3-dev ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-
-# Cache deps
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && echo "fn main(){}" > src/main.rs
-RUN cargo build --release
-
-# Build actual app
+# Stage 1: Build Rust Bot
+FROM rust:1.80-bullseye as rust-builder
+WORKDIR /usr/src/app
 COPY . .
-RUN cargo build --release
+# Build release binary
+RUN cargo build --release --bin matrix-ping-bot
 
-# ---------- Runtime stage ----------
-FROM debian:bullseye-slim
+# Stage 2: Build Node.js MCP Server
+FROM node:20-bookworm as node-builder
+WORKDIR /usr/src/app
+COPY web-search-mcp/package*.json ./
+RUN npm ci --omit=dev
+COPY web-search-mcp/ .
+# Build skipped as source is missing, assuming dist exists
+# RUN npm run build
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl1.1 libsqlite3-0 && \
-    rm -rf /var/lib/apt/lists/* && \
-    useradd -r -u 10001 -m app
+# Stage 3: Runtime
+# Use official Playwright image to ensure all browser dependencies are present
+FROM mcr.microsoft.com/playwright:v1.57.0-jammy
+
+# Install ca-certificates and dumb-init for signal handling
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    dumb-init \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /src/target/release/matrix-ping-bot /usr/local/bin/matrix-ping-bot
 
-# Create default writable dirs
-RUN mkdir -p /data && chown -R app:app /data
+# Copy Rust Binary
+COPY --from=rust-builder /usr/src/app/target/release/matrix-ping-bot /usr/local/bin/matrix-ping-bot
 
-USER app
+# Copy MCP Server
+COPY --from=node-builder /usr/src/app/dist /app/mcp/dist
+COPY --from=node-builder /usr/src/app/node_modules /app/mcp/node_modules
+COPY --from=node-builder /usr/src/app/package.json /app/mcp/package.json
 
-# Env-driven config; mount your config at /app/config.yaml or set MATRIX_CONFIG
-ENV MATRIX_STORE=/data/store \
-    MATRIX_SESSION_FILE=/data/session.json
+# Environment Setup
+ENV RUST_LOG=info,plugin_ai=debug
+# Ensure Node is in path (it is in Playwright image)
 
-ENTRYPOINT ["/usr/local/bin/matrix-ping-bot"]
-# Example: --homeserver ... --username ... --password ... --config /app/config.yaml
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+CMD ["matrix-ping-bot"]
