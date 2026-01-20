@@ -7,8 +7,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 RUN cargo build --release --bin matrix-ping-bot
 
-# Stage 2: Runtime
-FROM debian:bookworm-slim
+# Stage 2: Runtime (use sid to match glibc from nightly builder)
+FROM debian:sid-slim
 
 # Install Node 20 from NodeSource (MCP packages need Node >= 20)
 RUN apt-get update && apt-get install -y --no-install-recommends \
