@@ -1,5 +1,5 @@
 # Stage 1: Build application
-FROM rust:1.84-bullseye AS builder
+FROM rust:nightly-bullseye AS builder
 WORKDIR /usr/src/app
 
 # Copy source and build
