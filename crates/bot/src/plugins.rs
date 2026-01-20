@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{BotConfig, RoomCluster};
 use plugin_core::{Plugin, PluginRegistry, PluginSpec, PluginTriggers};
 use plugin_relay::{Relay, RelayConfig};
-use tracing::warn;
+use tracing::{info, warn};
 
 pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
     // Build a map of plugin id -> instance. Plugins are stateless; one instance is fine.
@@ -21,12 +21,14 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
     let mut specs = config.plugins.clone().unwrap_or_default();
 
     // Inject relay plugin configuration if clusters are defined and no explicit spec exists.
+    info!(clusters_count = config.clusters.len(), "Checking relay config");
     if !specs.iter().any(|s| s.id == "relay") && !config.clusters.is_empty() {
         let relay_config = RelayConfig {
             clusters: config.clusters.iter().map(cluster_from_bot).collect(),
             reupload_media: config.reupload_media,
             caption_media: config.caption_media,
         };
+        info!(relay_clusters = relay_config.clusters.len(), "Creating relay spec");
         let config_value = serde_yaml::to_value(relay_config).unwrap_or_default();
         let mut relay_spec = PluginSpec {
             id: "relay".to_owned(),
@@ -41,6 +43,9 @@ pub async fn build_registry(config: &BotConfig) -> Arc<PluginRegistry> {
             // keep our injected config_value overriding default
         }
         specs.push(relay_spec);
+        info!("Relay plugin spec added to registry");
+    } else if config.clusters.is_empty() {
+        info!("No clusters defined - relay will not be registered");
     }
     // Merge defaults from each plugin implementation, without duplicating IDs.
     for p in plugins.values() {

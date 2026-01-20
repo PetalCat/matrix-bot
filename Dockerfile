@@ -1,24 +1,13 @@
-# Stage 1: Generate cargo-chef recipe (dependency lockfile)
-FROM rust:1.80-bullseye AS chef
-RUN cargo install cargo-chef
+# Stage 1: Build application
+FROM rust:1.84-bullseye AS builder
 WORKDIR /usr/src/app
 
-FROM chef AS planner
-COPY Cargo.toml Cargo.lock ./
-COPY crates crates
-RUN cargo chef prepare --recipe-path recipe.json
-
-# Stage 2: Build dependencies (cached unless Cargo.toml/Cargo.lock change)
-FROM chef AS builder
-COPY --from=planner /usr/src/app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-
-# Build actual application
+# Copy source and build
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 RUN cargo build --release --bin matrix-ping-bot
 
-# Stage 3: Runtime
+# Stage 2: Runtime
 FROM debian:bookworm-slim
 
 # Install Node 20 from NodeSource (MCP packages need Node >= 20)

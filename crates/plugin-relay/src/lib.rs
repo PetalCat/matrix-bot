@@ -80,6 +80,8 @@ impl Plugin for Relay {
         spec: &PluginSpec,
         _meta: &RoomMessageMeta<'_>,
     ) -> Result<()> {
+        info!(room_id = %ctx.room.room_id(), sender = %event.sender, "Relay: on_room_message called");
+        
         if ctx.dev_active {
             info!(room_id = %ctx.room.room_id(), "Dev mode active: relay disabled");
             return Ok(());
