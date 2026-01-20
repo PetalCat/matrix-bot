@@ -86,11 +86,13 @@ impl Plugin for Relay {
         }
 
         let Some(plan) = self.ensure_plan(&ctx.client, spec).await? else {
+            info!(room_id = %ctx.room.room_id(), "Relay: no plan loaded (config empty?)");
             return Ok(());
         };
 
         let source_id = ctx.room.room_id().to_owned();
         let Some(targets) = plan.map.get(&source_id).cloned() else {
+            info!(room_id = %source_id, "Relay: room not in mapping");
             return Ok(());
         };
         let opts = plan.opts.get(&source_id).copied().unwrap_or(RelayOptions {
