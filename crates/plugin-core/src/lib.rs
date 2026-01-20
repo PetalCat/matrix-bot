@@ -78,7 +78,7 @@ pub struct PluginSpec {
     pub dev_only: Option<bool>,
     #[serde(default)]
     pub triggers: PluginTriggers,
-    #[serde(default)]
+    #[serde(default, flatten)]
     pub config: serde_yaml::Value,
 }
 
