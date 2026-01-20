@@ -25,7 +25,7 @@ RUN mkdir -p /data && useradd -r -u 10001 app && chown -R app:app /data /app
 USER app
 
 ENV RUST_LOG=info,plugin_ai=debug \
-    MATRIX_STORE=/data/store \
-    MATRIX_SESSION_FILE=/data/session.json
+    MATRIX_STORE=/app/data/store \
+    MATRIX_SESSION_FILE=/app/data/session.json
 
 ENTRYPOINT ["matrix-ping-bot"]
