@@ -317,7 +317,15 @@ impl Plugin for AiTool {
         };
 
         if api_key.is_none() {
-            warn!("AI request blocked: no API key set");
+            // Debug: log what we checked
+            let config_key = str_config(spec, "api_key").is_some();
+            let ai_api_key = std::env::var("AI_API_KEY").ok();
+            let google_key = std::env::var("GOOGLE_API_KEY").ok();
+            let openai_key = std::env::var("OPENAI_API_KEY").ok();
+            warn!(
+                "AI request blocked: no API key set. Debug: provider={}, config.api_key={}, AI_API_KEY={:?}, GOOGLE_API_KEY={:?}, OPENAI_API_KEY={:?}",
+                provider, config_key, ai_api_key.as_ref().map(|_| "[SET]"), google_key.as_ref().map(|_| "[SET]"), openai_key.as_ref().map(|_| "[SET]")
+            );
             return send_text(ctx, "AI key missing: set config.api_key etc").await;
         }
         let api_key = api_key.unwrap();
