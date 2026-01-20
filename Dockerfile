@@ -1,5 +1,5 @@
 # Stage 1: Build application
-FROM rust:nightly-bullseye AS builder
+FROM rust:nightly-bookworm AS builder
 WORKDIR /usr/src/app
 
 # Copy source and build
