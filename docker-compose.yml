@@ -2,10 +2,10 @@ services:
   bot:
     build: .
     restart: unless-stopped
+    env_file:
+      - .env
     volumes:
-      - ./config.docker.yaml:/app/config.yaml
+      - ./config.docker.yaml:/app/config.yaml:ro
       - ./data:/app/data
-      # Mount .env if you have one, or comment out
-      - ./.env:/app/.env
     environment:
       - RUST_LOG=info,plugin_ai=debug
