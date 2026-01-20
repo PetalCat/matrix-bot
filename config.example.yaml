@@ -27,6 +27,8 @@ plugins:
     #   time:
     #     command: "cargo" # or "./matrix-ping-bot" in prod
     #     args: ["run", "--", "--mcp-server", "time"]
+    #   websearch:
+    #     command: "npx -y web-search-mcp-server"  # https://github.com/mrkrsl/web-search-mcp
     #   filesystem:
     #     command: "npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/directory"
 
