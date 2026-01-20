@@ -28,7 +28,10 @@ plugins:
     #     command: "cargo" # or "./matrix-ping-bot" in prod
     #     args: ["run", "--", "--mcp-server", "time"]
     #   websearch:
-    #     command: "npx -y web-search-mcp-server"  # https://github.com/mrkrsl/web-search-mcp
+    #     # Option 1: Use published npm package (simpler)
+    #     command: "npx -y @guhcostan/web-search-mcp"
+    #     # Option 2: Clone https://github.com/mrkrsl/web-search-mcp, npm install && npm run build
+    #     # command: "node /path/to/web-search-mcp/dist/index.js"
     #   filesystem:
     #     command: "npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/directory"
 
